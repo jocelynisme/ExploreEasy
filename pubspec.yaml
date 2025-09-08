@@ -60,7 +60,7 @@ dependencies:
   geolocator: ^10.0.0
   test: ^1.25.0
   string_similarity: ^2.0.0
-  
+  share_plus: ^7.2.1
 
  
  

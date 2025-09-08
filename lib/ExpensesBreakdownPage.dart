@@ -18,6 +18,7 @@ class ExpensesBreakdownPage extends StatelessWidget {
   final List<Color> categoryColors;
   final String userId;
   final Map<String, String> userIdToUsername;
+  final String tripId;
 
   const ExpensesBreakdownPage({
     super.key,
@@ -29,11 +30,16 @@ class ExpensesBreakdownPage extends StatelessWidget {
     required this.categoryColors,
     required this.userId,
     required this.userIdToUsername,
+    required this.tripId,
   });
 
   Future<void> _exportCSV(BuildContext context) async {
     try {
       List<List<String>> csvData = [
+        ['Expense Breakdown Report'],
+        ['Generated on: ${DateTime.now().toString().split('.')[0]}'],
+        [],
+        ['My Spending by Category'],
         ['Category', 'Amount (MYR)'],
       ];
 
@@ -46,20 +52,152 @@ class ExpensesBreakdownPage extends StatelessWidget {
       });
 
       csvData.add([]);
-      csvData.add(['Who Owes Who']);
+      csvData.add(['All Members Total Spending']);
+      csvData.add(['Member', 'Username', 'Total Spent (MYR)']);
+
+      double totalGroupSpending = 0;
+      for (var member in allMembers) {
+        double memberSpending = individualSpending[member] ?? 0.0;
+        totalGroupSpending += memberSpending;
+        String username = userIdToUsername[member] ?? 'Unknown User';
+        csvData.add([member, username, memberSpending.toStringAsFixed(2)]);
+      }
+
+      csvData.add([
+        'TOTAL GROUP SPENDING',
+        '',
+        totalGroupSpending.toStringAsFixed(2),
+      ]);
       csvData.add([]);
 
-      for (var member in allMembers) {
-        if (member != userId) {
-          double userSpend = individualSpending[userId] ?? 0;
-          double memberSpend = individualSpending[member] ?? 0;
-          double difference = (userSpend - memberSpend) / allMembers.length;
+      // Settlement calculations based on equal split
+      csvData.add(['Settlement Analysis (Equal Split Method)']);
+      csvData.add([
+        'Member',
+        'Username',
+        'Paid',
+        'Fair Share',
+        'Balance',
+        'Status',
+      ]);
 
+      double fairShare = totalGroupSpending / allMembers.length;
+      List<Map<String, dynamic>> balances = [];
+
+      for (var member in allMembers) {
+        double paid = individualSpending[member] ?? 0.0;
+        double balance = paid - fairShare;
+        String username = userIdToUsername[member] ?? 'Unknown User';
+        String status =
+            balance > 0.01
+                ? 'OVERPAID'
+                : (balance < -0.01 ? 'UNDERPAID' : 'BALANCED');
+
+        balances.add({
+          'memberId': member,
+          'username': username,
+          'paid': paid,
+          'fairShare': fairShare,
+          'balance': balance,
+          'status': status,
+        });
+
+        csvData.add([
+          member,
+          username,
+          paid.toStringAsFixed(2),
+          fairShare.toStringAsFixed(2),
+          balance.toStringAsFixed(2),
+          status,
+        ]);
+      }
+
+      csvData.add([]);
+      csvData.add(['Settlement Suggestions']);
+      csvData.add(['From', 'To', 'Amount (MYR)', 'Description']);
+
+      // Calculate optimal settlements
+      var creditors = balances.where((b) => b['balance'] < -0.01).toList();
+      var debtors = balances.where((b) => b['balance'] > 0.01).toList();
+
+      // Sort by amount
+      creditors.sort(
+        (a, b) => a['balance'].compareTo(b['balance']),
+      ); // Most owed first
+      debtors.sort(
+        (a, b) => b['balance'].compareTo(a['balance']),
+      ); // Most owing first
+
+      if (creditors.isEmpty && debtors.isEmpty) {
+        csvData.add(['No settlements needed', 'All members balanced', '', '']);
+      } else {
+        // Create working copies for settlement calculation
+        var workingCreditors =
+            creditors.map((c) => Map<String, dynamic>.from(c)).toList();
+        var workingDebtors =
+            debtors.map((d) => Map<String, dynamic>.from(d)).toList();
+
+        int step = 1;
+        while (workingDebtors.isNotEmpty && workingCreditors.isNotEmpty) {
+          var debtor = workingDebtors.first;
+          var creditor = workingCreditors.first;
+
+          double debtorOwes = debtor['balance'];
+          double creditorIsOwed = -creditor['balance']; // Make positive
+
+          double paymentAmount =
+              debtorOwes < creditorIsOwed ? debtorOwes : creditorIsOwed;
+
+          if (paymentAmount > 0.01) {
+            csvData.add([
+              debtor['username'],
+              creditor['username'],
+              paymentAmount.toStringAsFixed(2),
+              'Step $step settlement',
+            ]);
+
+            step++;
+
+            // Update balances
+            debtor['balance'] -= paymentAmount;
+            creditor['balance'] += paymentAmount;
+
+            // Remove if settled
+            if (debtor['balance'] < 0.01) {
+              workingDebtors.removeAt(0);
+            }
+            if (creditor['balance'].abs() < 0.01) {
+              workingCreditors.removeAt(0);
+            }
+          } else {
+            break;
+          }
+        }
+
+        csvData.add(['', '', '', 'Total steps: ${step - 1}']);
+      }
+
+      csvData.add([]);
+      csvData.add(['Category Breakdown - All Members']);
+      csvData.add(['Category', 'Total Amount (MYR)', 'Percentage']);
+
+      double totalCategorySpending = categoryTotals.values.fold(
+        0,
+        (a, b) => a + b,
+      );
+      categoryTotals.forEach((category, amount) {
+        if (amount > 0) {
+          double percentage =
+              totalCategorySpending > 0
+                  ? (amount / totalCategorySpending * 100)
+                  : 0;
           csvData.add([
-            '$member owes $userId MYR ${difference.toStringAsFixed(2)}',
+            category,
+            amount.toStringAsFixed(2),
+            '${percentage.toStringAsFixed(1)}%',
           ]);
         }
-      }
+      });
 
       final directory = await getApplicationDocumentsDirectory();
       final path = '${directory.path}/expense_breakdown.csv';
@@ -74,17 +212,12 @@ class ExpensesBreakdownPage extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Builder(
-              builder:
-                  (context) => Text(
-                    'CSV exported successfully!',
-                    style: GoogleFonts.poppins(
-                      color: const Color(0xFF6D4C41),
-                      fontSize: 14,
-                    ),
-                  ).animate().fadeIn(
-                    duration: const Duration(milliseconds: 500),
-                  ),
+            content: Text(
+              'CSV exported successfully!',
+              style: GoogleFonts.poppins(
+                color: const Color(0xFF6D4C41),
+                fontSize: 14,
+              ),
             ),
             backgroundColor: const Color(0xFFD7CCC8),
             behavior: SnackBarBehavior.floating,
@@ -99,17 +232,12 @@ class ExpensesBreakdownPage extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Builder(
-              builder:
-                  (context) => Text(
-                    'Error exporting CSV: $e',
-                    style: GoogleFonts.poppins(
-                      color: const Color(0xFF6D4C41),
-                      fontSize: 14,
-                    ),
-                  ).animate().fadeIn(
-                    duration: const Duration(milliseconds: 500),
-                  ),
+            content: Text(
+              'Error exporting CSV: $e',
+              style: GoogleFonts.poppins(
+                color: const Color(0xFF6D4C41),
+                fontSize: 14,
+              ),
             ),
             backgroundColor: Colors.redAccent,
             behavior: SnackBarBehavior.floating,
@@ -126,7 +254,33 @@ class ExpensesBreakdownPage extends StatelessWidget {
     try {
       final pdf = pw.Document();
 
+      // 1) Build per-member "paid" correctly from category breakdown (fallback to individualSpending)
+      final Map<String, double> perMemberPaid = {
+        for (final m in allMembers)
+          m:
+              (individualCategorySpending[m]?.values.fold<double>(
+                0.0,
+                (a, b) => a + b,
+              )) ??
+              (individualSpending[m] ?? 0.0),
+      };
+
+      // 2) Compute totals/fair share from corrected "paid"
+      final totalGroupSpending = perMemberPaid.values.fold<double>(
+        0.0,
+        (a, b) => a + b,
+      );
+      final fairShare =
+          allMembers.isEmpty ? 0.0 : totalGroupSpending / allMembers.length;
+      const eps = 0.01;
+
+      // 3) "My spending" from category map as before
       final mySpending = individualCategorySpending[userId] ?? {};
+
+      pw.Widget sectionTitle(String t) => pw.Text(
+        t,
+        style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+      );
 
       pdf.addPage(
         pw.MultiPage(
@@ -134,30 +288,213 @@ class ExpensesBreakdownPage extends StatelessWidget {
               (context) => [
                 pw.Text(
                   'Expense Breakdown Report',
-                  style: pw.TextStyle(fontSize: 24),
+                  style: pw.TextStyle(
+                    fontSize: 24,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.Text(
+                  'Generated on: ${DateTime.now().toString().split('.')[0]}',
+                  style: pw.TextStyle(fontSize: 12),
                 ),
                 pw.SizedBox(height: 20),
+
+                // Summary
+                pw.Container(
+                  padding: const pw.EdgeInsets.all(12),
+                  decoration: pw.BoxDecoration(
+                    color: PdfColors.grey100,
+                    borderRadius: pw.BorderRadius.circular(8),
+                  ),
+                  child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'Summary',
+                        style: pw.TextStyle(
+                          fontSize: 16,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.Text(
+                        'Total Group Spending: MYR ${totalGroupSpending.toStringAsFixed(2)}',
+                      ),
+                      pw.Text(
+                        'Fair Share per Person: MYR ${fairShare.toStringAsFixed(2)}',
+                      ),
+                      pw.Text('Total Members: ${allMembers.length}'),
+                    ],
+                  ),
+                ),
+
+                pw.SizedBox(height: 20),
+
+                // My spending breakdown
+                sectionTitle('My Spending by Category'),
+                pw.SizedBox(height: 10),
                 pw.Table.fromTextArray(
-                  headers: ['Category', 'Amount (MYR)'],
+                  headers: const ['Category', 'Amount (MYR)'],
                   data:
                       mySpending.entries
                           .where((e) => e.value > 0)
                           .map((e) => [e.key, e.value.toStringAsFixed(2)])
                           .toList(),
                 ),
-                pw.SizedBox(height: 20),
-                pw.Text('Who Owes Who', style: pw.TextStyle(fontSize: 18)),
-                pw.SizedBox(height: 10),
-                ...allMembers.where((member) => member != userId).map((member) {
-                  double userSpend = individualSpending[userId] ?? 0;
-                  double memberSpend = individualSpending[member] ?? 0;
-                  double difference =
-                      (userSpend - memberSpend) / allMembers.length;
 
-                  return pw.Text(
-                    '$member owes $userId MYR ${difference.toStringAsFixed(2)}',
+                pw.SizedBox(height: 20),
+
+                // All members spending (PAID uses perMemberPaid)
+                sectionTitle('All Members Spending'),
+                pw.SizedBox(height: 10),
+                pw.Table.fromTextArray(
+                  headers: const [
+                    'Member ID',
+                    'Username',
+                    'Paid',
+                    'Fair Share',
+                    'Balance (Paid−Fair)',
+                    'Direction',
+                  ],
+                  data:
+                      allMembers.map((memberId) {
+                        final username =
+                            userIdToUsername[memberId] ?? 'Unknown User';
+                        final paid = perMemberPaid[memberId] ?? 0.0;
+                        final balance = paid - fairShare; // + receive, - pay
+                        final direction =
+                            balance > eps
+                                ? 'SHOULD RECEIVE'
+                                : (balance < -eps ? 'SHOULD PAY' : 'BALANCED');
+                        return [
+                          memberId,
+                          username,
+                          paid.toStringAsFixed(2),
+                          fairShare.toStringAsFixed(2),
+                          balance.toStringAsFixed(2),
+                          direction,
+                        ];
+                      }).toList(),
+                ),
+
+                pw.SizedBox(height: 20),
+
+                // Settlement Suggestions (uses perMemberPaid as source of truth)
+                sectionTitle('Settlement Suggestions'),
+                pw.SizedBox(height: 10),
+                ...(() {
+                  final rows = <pw.Widget>[];
+
+                  // + => should receive; - => should pay
+                  final balances =
+                      allMembers.map((memberId) {
+                        final paid = perMemberPaid[memberId] ?? 0.0;
+                        final balance = paid - fairShare;
+                        return {
+                          'memberId': memberId,
+                          'username':
+                              userIdToUsername[memberId] ?? 'Unknown User',
+                          'balance': balance,
+                        };
+                      }).toList();
+
+                  var creditors =
+                      balances
+                          .where((b) => (b['balance'] as double) > eps)
+                          .toList(); // should receive
+                  var debtors =
+                      balances
+                          .where((b) => (b['balance'] as double) < -eps)
+                          .toList(); // should pay
+
+                  if (creditors.isEmpty && debtors.isEmpty) {
+                    rows.add(
+                      pw.Text(
+                        'No settlements needed - all members are balanced!',
+                      ),
+                    );
+                    return rows;
+                  }
+
+                  // Sort: largest receiver first; largest payer (most negative) first
+                  creditors.sort(
+                    (a, b) => (b['balance'] as double).compareTo(
+                      a['balance'] as double,
+                    ),
                   );
-                }).toList(),
+                  debtors.sort(
+                    (a, b) => (a['balance'] as double).compareTo(
+                      b['balance'] as double,
+                    ),
+                  );
+
+                  final workingCreditors =
+                      creditors
+                          .map((c) => Map<String, dynamic>.from(c))
+                          .toList();
+                  final workingDebtors =
+                      debtors.map((d) => Map<String, dynamic>.from(d)).toList();
+
+                  final settlementData = <List<String>>[];
+                  var step = 1;
+
+                  while (workingDebtors.isNotEmpty &&
+                      workingCreditors.isNotEmpty) {
+                    final debtor = workingDebtors.first; // balance < 0
+                    final creditor = workingCreditors.first; // balance > 0
+
+                    final debtorOwes =
+                        -(debtor['balance'] as double); // make positive
+                    final creditorIsOwed =
+                        (creditor['balance'] as double); // positive
+                    final pay =
+                        debtorOwes < creditorIsOwed
+                            ? debtorOwes
+                            : creditorIsOwed;
+
+                    if (pay > eps) {
+                      settlementData.add([
+                        'Step $step',
+                        debtor['username'] as String, // From (payer)
+                        creditor['username'] as String, // To (receiver)
+                        'MYR ${pay.toStringAsFixed(2)}',
+                      ]);
+                      step++;
+
+                      // Move both toward zero
+                      debtor['balance'] =
+                          (debtor['balance'] as double) +
+                          pay; // e.g. -66.67 + 66.67
+                      creditor['balance'] =
+                          (creditor['balance'] as double) -
+                          pay; // e.g. 133.33 - 66.67
+
+                      if ((debtor['balance'] as double) >= -eps) {
+                        workingDebtors.removeAt(0);
+                      }
+                      if ((creditor['balance'] as double) <= eps) {
+                        workingCreditors.removeAt(0);
+                      }
+                    } else {
+                      break;
+                    }
+                  }
+
+                  if (settlementData.isNotEmpty) {
+                    rows.add(
+                      pw.Table.fromTextArray(
+                        headers: const [
+                          'Step',
+                          'From (Payer)',
+                          'To (Receiver)',
+                          'Amount',
+                        ],
+                        data: settlementData,
+                      ),
+                    );
+                  }
+
+                  return rows;
+                })(),
               ],
         ),
       );
@@ -170,17 +507,12 @@ class ExpensesBreakdownPage extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Builder(
-              builder:
-                  (context) => Text(
-                    'PDF exported successfully!',
-                    style: GoogleFonts.poppins(
-                      color: const Color(0xFF6D4C41),
-                      fontSize: 14,
-                    ),
-                  ).animate().fadeIn(
-                    duration: const Duration(milliseconds: 500),
-                  ),
+            content: Text(
+              'PDF exported successfully!',
+              style: GoogleFonts.poppins(
+                color: const Color(0xFF6D4C41),
+                fontSize: 14,
+              ),
             ),
             backgroundColor: const Color(0xFFD7CCC8),
             behavior: SnackBarBehavior.floating,
@@ -195,17 +527,12 @@ class ExpensesBreakdownPage extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Builder(
-              builder:
-                  (context) => Text(
-                    'Error exporting PDF: $e',
-                    style: GoogleFonts.poppins(
-                      color: const Color(0xFF6D4C41),
-                      fontSize: 14,
-                    ),
-                  ).animate().fadeIn(
-                    duration: const Duration(milliseconds: 500),
-                  ),
+            content: Text(
+              'Error exporting PDF: $e',
+              style: GoogleFonts.poppins(
+                color: const Color(0xFF6D4C41),
+                fontSize: 14,
+              ),
             ),
             backgroundColor: Colors.redAccent,
             behavior: SnackBarBehavior.floating,
@@ -702,63 +1029,6 @@ class ExpensesBreakdownPage extends StatelessWidget {
                     curve: Curves.easeOut,
                   ),
               const SizedBox(height: 24),
-
-              // Export Report
-              Text(
-                'Export Report',
-                style: GoogleFonts.poppins(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: const Color(0xFF6D4C41),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Card(
-                    elevation: 2,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          FilledButton.icon(
-                            onPressed: () => _exportCSV(context),
-                            icon: const Icon(Icons.file_download, size: 18),
-                            label: Text(
-                              'Export CSV',
-                              style: GoogleFonts.poppins(fontSize: 14),
-                            ),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFFD7CCC8),
-                              foregroundColor: const Color(0xFF6D4C41),
-                            ),
-                          ),
-                          FilledButton.icon(
-                            onPressed: () => _exportPDF(context),
-                            icon: const Icon(Icons.picture_as_pdf, size: 18),
-                            label: Text(
-                              'Export PDF',
-                              style: GoogleFonts.poppins(fontSize: 14),
-                            ),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFFD7CCC8),
-                              foregroundColor: const Color(0xFF6D4C41),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                  .animate()
-                  .fadeIn(duration: const Duration(milliseconds: 500))
-                  .slideY(
-                    begin: 0.2,
-                    end: 0.0,
-                    duration: const Duration(milliseconds: 500),
-                    curve: Curves.easeOut,
-                  ),
             ],
           ),
         ),

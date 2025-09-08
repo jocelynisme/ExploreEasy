@@ -17,6 +17,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cloudinary_public/cloudinary_public.dart';
 import 'dart:io';
 import 'edit_budget_dialog.dart';
+import 'package:flutter/services.dart';
 
 class MyTripsScreen extends StatefulWidget {
   final String userId;
@@ -1460,7 +1461,9 @@ class _ItineraryTabState extends State<ItineraryTab> {
       Map<String, List<Map<String, dynamic>>> groupedItinerary = {};
       for (var doc in itinerarySnapshot.docs) {
         var data = doc.data();
+
         if (!data.containsKey('date') || !data.containsKey('placeId')) continue;
+
         var item = {
           'placeId': data['placeId'],
           'area': data['area'] ?? 'Unknown',
@@ -1469,11 +1472,18 @@ class _ItineraryTabState extends State<ItineraryTab> {
           'sequence': data['sequence'] ?? 0,
           'docId': doc.id,
         };
+
+        // Include placeData if it exists (for accommodations and other embedded data)
+        if (data.containsKey('placeData')) {
+          item['placeData'] = data['placeData'];
+        }
+
         var date = (data['date'] as Timestamp).toDate();
         var dateKey = DateFormat('yyyy-MM-dd').format(date);
         groupedItinerary.putIfAbsent(dateKey, () => []);
         groupedItinerary[dateKey]!.add(item);
       }
+
       groupedItinerary.forEach((dateKey, items) {
         items.sort(
           (a, b) => (a['sequence'] ?? 0).compareTo(b['sequence'] ?? 0),
@@ -1589,280 +1599,332 @@ class _ItineraryTabState extends State<ItineraryTab> {
     final isOutdoor = item['isOutdoor'] ?? false;
     final area = item['area'];
 
-    return FutureBuilder<DocumentSnapshot>(
-      future:
-          FirebaseFirestore.instance
-              .collection('areas')
-              .doc(area)
-              .collection('places')
-              .doc(placeId)
-              .get(),
-      builder: (context, placeSnapshot) {
-        if (placeSnapshot.connectionState == ConnectionState.waiting) {
-          return Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Card(
-              elevation: 4,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const ListTile(
-                contentPadding: EdgeInsets.all(12),
-                leading: CircularProgressIndicator(color: _brandDark),
-                title: Text(
-                  'Loading...',
-                  style: TextStyle(color: Colors.black54),
-                ),
-              ),
-            ),
-          );
-        }
-        if (!placeSnapshot.hasData || !placeSnapshot.data!.exists) {
-          return Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Card(
-              elevation: 4,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: ListTile(
-                contentPadding: const EdgeInsets.all(12),
-                leading: Icon(Icons.error, color: Colors.redAccent),
-                title: Text(
-                  'Place Not Found',
-                  style: GoogleFonts.poppins(color: Colors.black54),
-                ),
-              ),
-            ),
-          );
-        }
+    // Check if placeData is embedded in the item
+    final embeddedPlaceData = item['placeData'] as Map<String, dynamic>?;
 
-        final placeData = placeSnapshot.data!.data() as Map<String, dynamic>?;
-        final placeName = placeData?['name'] ?? 'Unknown';
-        final category = placeData?['category'] ?? 'Unknown';
-        final description =
-            placeData?['description'] ?? 'No description available';
-        final rating =
-            (placeData?['rating'] is num)
-                ? (placeData!['rating'] as num).toDouble()
-                : 0.0;
-
-        String? imageUrl;
-        if (placeData?['primaryPhotoUrl'] != null) {
-          imageUrl = placeData!['primaryPhotoUrl'] as String?;
-        } else if (placeData?['photoUrls'] != null) {
-          final photoUrls = placeData!['photoUrls'] as List?;
-          if (photoUrls != null && photoUrls.isNotEmpty)
-            imageUrl = photoUrls.first.toString();
-        } else if (placeData?['imageUrl'] != null) {
-          imageUrl = placeData!['imageUrl'] as String?;
-        } else if (placeData?['image'] != null) {
-          imageUrl = placeData!['image'] as String?;
-        }
-
-        final IconData categoryIcon = _getCategoryIcon(category);
-        final Color categoryColor = _getCategoryColor(category);
-
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: Stack(
-            children: [
-              Card(
+    if (embeddedPlaceData != null) {
+      // Use embedded place data (like for accommodations)
+      return _buildPlaceCardWithData(
+        embeddedPlaceData,
+        item,
+        weather,
+        index,
+        totalItems,
+      );
+    } else {
+      // Fetch from Firestore (for regular places)
+      return FutureBuilder<DocumentSnapshot>(
+        future:
+            FirebaseFirestore.instance
+                .collection('areas')
+                .doc(area)
+                .collection('places')
+                .doc(placeId)
+                .get(),
+        builder: (context, placeSnapshot) {
+          if (placeSnapshot.connectionState == ConnectionState.waiting) {
+            return Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: Card(
                 elevation: 4,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: InkWell(
+                child: const ListTile(
+                  contentPadding: EdgeInsets.all(12),
+                  leading: CircularProgressIndicator(color: _brandDark),
+                  title: Text(
+                    'Loading...',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          if (!placeSnapshot.hasData || !placeSnapshot.data!.exists) {
+            return Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: Card(
+                elevation: 4,
+                shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
-                  onTap:
-                      () => _showPlaceDetails(
-                        placeData,
-                        placeName,
-                        weather,
-                        isOutdoor,
-                      ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ClipRRect(
-                        borderRadius: const BorderRadius.vertical(
-                          top: Radius.circular(12),
-                        ),
-                        child: SizedBox(
-                          height: 120,
-                          width: double.infinity,
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              (imageUrl != null && imageUrl.isNotEmpty)
-                                  ? Image.network(
-                                    imageUrl,
-                                    fit: BoxFit.cover,
-                                    loadingBuilder: (
-                                      context,
-                                      child,
-                                      loadingProgress,
-                                    ) {
-                                      if (loadingProgress == null) return child;
-                                      return Container(
-                                        color: Colors.grey.shade200,
-                                        child: Center(
-                                          child: CircularProgressIndicator(
-                                            color: _brandDark,
-                                          ),
+                ),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.all(12),
+                  leading: Icon(Icons.error, color: Colors.redAccent),
+                  title: Text(
+                    'Place Not Found',
+                    style: GoogleFonts.poppins(color: Colors.black54),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          final placeData = placeSnapshot.data!.data() as Map<String, dynamic>?;
+          return _buildPlaceCardWithData(
+            placeData,
+            item,
+            weather,
+            index,
+            totalItems,
+          );
+        },
+      );
+    }
+  }
+
+  Widget _buildPlaceCardWithData(
+    Map<String, dynamic>? placeData,
+    Map<String, dynamic> item,
+    String weather,
+    int index,
+    int totalItems,
+  ) {
+    if (placeData == null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        child: Card(
+          elevation: 4,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: ListTile(
+            contentPadding: const EdgeInsets.all(12),
+            leading: Icon(Icons.error, color: Colors.redAccent),
+            title: Text(
+              'Place Data Not Found',
+              style: GoogleFonts.poppins(color: Colors.black54),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final isOutdoor = item['isOutdoor'] ?? false;
+    final placeName = placeData['name'] ?? 'Unknown';
+    final category = placeData['category'] ?? 'Unknown';
+    final description = placeData['description'] ?? 'No description available';
+    final rating =
+        (placeData['rating'] is num)
+            ? (placeData['rating'] as num).toDouble()
+            : 0.0;
+
+    String? imageUrl;
+    if (placeData['primaryPhotoUrl'] != null) {
+      imageUrl = placeData['primaryPhotoUrl'] as String?;
+    } else if (placeData['photoUrls'] != null) {
+      final photoUrls = placeData['photoUrls'] as List?;
+      if (photoUrls != null && photoUrls.isNotEmpty)
+        imageUrl = photoUrls.first.toString();
+    } else if (placeData['imageUrl'] != null) {
+      imageUrl = placeData['imageUrl'] as String?;
+    } else if (placeData['image'] != null) {
+      imageUrl = placeData['image'] as String?;
+    }
+
+    final IconData categoryIcon = _getCategoryIcon(category);
+    final Color categoryColor = _getCategoryColor(category);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Stack(
+        children: [
+          Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap:
+                  () => _showPlaceDetails(
+                    placeData,
+                    placeName,
+                    weather,
+                    isOutdoor,
+                  ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(12),
+                    ),
+                    child: SizedBox(
+                      height: 120,
+                      width: double.infinity,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          (imageUrl != null && imageUrl.isNotEmpty)
+                              ? Image.network(
+                                imageUrl,
+                                fit: BoxFit.cover,
+                                loadingBuilder: (
+                                  context,
+                                  child,
+                                  loadingProgress,
+                                ) {
+                                  if (loadingProgress == null) return child;
+                                  return Container(
+                                    color: Colors.grey.shade200,
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        color: _brandDark,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                errorBuilder:
+                                    (context, error, stackTrace) =>
+                                        _buildPlaceholderImage(
+                                          categoryIcon,
+                                          categoryColor,
                                         ),
-                                      );
-                                    },
-                                    errorBuilder:
-                                        (context, error, stackTrace) =>
-                                            _buildPlaceholderImage(
-                                              categoryIcon,
-                                              categoryColor,
-                                            ),
-                                  )
-                                  : _buildPlaceholderImage(
-                                    categoryIcon,
-                                    categoryColor,
-                                  ),
-                              Container(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Colors.transparent,
-                                      Colors.black.withOpacity(0.1),
-                                    ],
-                                  ),
-                                ),
+                              )
+                              : _buildPlaceholderImage(
+                                categoryIcon,
+                                categoryColor,
                               ),
-                            ],
+                          Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.transparent,
+                                  Colors.black.withOpacity(0.1),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                      Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
                           children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    placeName,
-                                    style: GoogleFonts.poppins(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600,
-                                      color: _brandDark,
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
+                            Expanded(
+                              child: Text(
+                                placeName,
+                                style: GoogleFonts.poppins(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color: _brandDark,
                                 ),
-                                if (rating > 0)
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        Icons.star,
-                                        color: Colors.amber,
-                                        size: 16,
-                                      ),
-                                      const SizedBox(width: 2),
-                                      Text(
-                                        rating.toStringAsFixed(1),
-                                        style: GoogleFonts.poppins(
-                                          fontSize: 14,
-                                          color: Colors.black54,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                _CategoryChip(
-                                  categoryIcon: categoryIcon,
-                                  categoryColor: categoryColor,
-                                  category: category,
-                                ),
-                                _IndoorOutdoorChip(isOutdoor: isOutdoor),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              description,
-                              style: GoogleFonts.poppins(
-                                color: Colors.black54,
-                                fontSize: 14,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
                             ),
-                            const SizedBox(height: 12),
-                            Row(
-                              children: [
-                                Icon(Icons.cloud, color: _brandDark, size: 16),
-                                const SizedBox(width: 4),
-                                Expanded(
-                                  child: Text(
-                                    'Weather: $weather',
-                                    style: GoogleFonts.poppins(
-                                      color: _brandDark,
-                                      fontSize: 12,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                            if (rating > 0)
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.star,
+                                    color: Colors.amber,
+                                    size: 16,
                                   ),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    rating.toStringAsFixed(1),
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 14,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _CategoryChip(
+                              categoryIcon: categoryIcon,
+                              categoryColor: categoryColor,
+                              category: category,
+                            ),
+                            _IndoorOutdoorChip(isOutdoor: isOutdoor),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          description,
+                          style: GoogleFonts.poppins(
+                            color: Colors.black54,
+                            fontSize: 14,
+                          ),
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Icon(Icons.cloud, color: _brandDark, size: 16),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                'Weather: $weather',
+                                style: GoogleFonts.poppins(
+                                  color: _brandDark,
+                                  fontSize: 12,
                                 ),
-                              ],
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           ],
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Positioned(
-                top: 8,
-                left: 8,
-                child: Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 10,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: Text(
-                    '${index + 1}',
-                    style: GoogleFonts.poppins(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: _brandDark,
+                      ],
                     ),
                   ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            top: 8,
+            left: 8,
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Text(
+                '${index + 1}',
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _brandDark,
                 ),
               ),
-            ],
+            ),
           ),
-        ).animate().fadeIn(
-          duration: const Duration(milliseconds: 500),
-          delay: Duration(milliseconds: index * 100),
-        );
-      },
+        ],
+      ),
+    ).animate().fadeIn(
+      duration: const Duration(milliseconds: 500),
+      delay: Duration(milliseconds: index * 100),
     );
   }
 
@@ -1933,14 +1995,17 @@ class _ItineraryTabState extends State<ItineraryTab> {
   }
 
   void _showPlaceDetails(
-    Map<String, dynamic>? placeData,
+    Map<String, dynamic> item,
     String placeName,
     String weather,
     bool isOutdoor,
   ) {
-    // Extract the area from the place data or use a default
-    final area = placeData?['area'] as String? ?? 'George Town';
-    final placeId = placeData?['placeId'] as String? ?? '';
+    // Extract the area and placeId from the item
+    final area = (item['area'] as String?) ?? 'Batu Ferringhi';
+
+    // Check for both 'placeId' and 'place_id' field names
+    final placeId =
+        (item['placeId'] as String?) ?? (item['place_id'] as String?) ?? '';
 
     if (placeId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1957,11 +2022,15 @@ class _ItineraryTabState extends State<ItineraryTab> {
       return;
     }
 
+    // Get embedded place data if available
+    final embeddedPlaceData = item['placeData'] as Map<String, dynamic>?;
+
     // Use your existing PlaceDetailsSheet
     PlaceDetailsSheet.show(
       context,
       areaId: area,
       placeId: placeId,
+      embeddedPlaceData: embeddedPlaceData, // Pass embedded data
       radiusKm: 2.0,
     );
   }
@@ -1986,6 +2055,17 @@ class _ItineraryTabState extends State<ItineraryTab> {
       'MMMM d, yyyy',
     ).format(DateTime.parse(selectedDateKey));
     var weather = weatherMap[selectedDateKey] ?? 'Unknown';
+    String? dayArea;
+    try {
+      final activityItems = dayItems.where(
+        (item) => (item['sequence'] ?? 0) > 0,
+      );
+      if (activityItems.isNotEmpty) {
+        dayArea = activityItems.first['area'] as String?;
+      }
+    } catch (e) {
+      dayArea = null;
+    }
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -2010,13 +2090,41 @@ class _ItineraryTabState extends State<ItineraryTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Day ${_selectedDayIndex + 1}',
-                style: GoogleFonts.poppins(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
+              Row(
+                children: [
+                  Text(
+                    'Day ${_selectedDayIndex + 1}',
+                    style: GoogleFonts.poppins(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  if (dayArea != null) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Text(
+                        dayArea,
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
               Text(
                 displayDate,
@@ -2110,91 +2218,14 @@ class _ItineraryTabState extends State<ItineraryTab> {
               Container(
                 color: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Flexible(
-                          child: SegmentedButton<bool>(
-                            segments: [
-                              ButtonSegment(
-                                value: false,
-                                label: Text(
-                                  'List View',
-                                  style: GoogleFonts.poppins(fontSize: 12),
-                                ),
-                                icon: Icon(
-                                  Icons.list,
-                                  size: 16,
-                                  color: _brandDark,
-                                ),
-                              ),
-                              ButtonSegment(
-                                value: true,
-                                label: Text(
-                                  'Map View',
-                                  style: GoogleFonts.poppins(fontSize: 12),
-                                ),
-                                icon: Icon(
-                                  Icons.map,
-                                  size: 16,
-                                  color: _brandDark,
-                                ),
-                              ),
-                            ],
-                            selected: {_isMapView},
-                            onSelectionChanged:
-                                (Set<bool> selection) => setState(
-                                  () => _isMapView = selection.first,
-                                ),
-                            style: SegmentedButton.styleFrom(
-                              backgroundColor: Colors.grey[100],
-                              foregroundColor: _brandDark,
-                              selectedBackgroundColor: _brand,
-                              selectedForegroundColor: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    _buildDaySelector(sortedDates),
-                  ],
-                ),
+                child: _buildDaySelector(sortedDates),
               ),
               Expanded(
-                child:
-                    _isMapView
-                        ? Container(
-                          color: const Color(0xFFF7F7F7),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.map, size: 64, color: _brandDark),
-                              const SizedBox(height: 16),
-                              Text(
-                                'Map View Coming Soon!',
-                                style: GoogleFonts.poppins(
-                                  fontSize: 18,
-                                  color: _brandDark,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Integrate Google Maps or similar service here',
-                                style: GoogleFonts.poppins(
-                                  color: Colors.black54,
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                        : _buildListView(
-                          sortedDates,
-                          groupedItinerary,
-                          weatherMap,
-                        ),
+                child: _buildListView(
+                  sortedDates,
+                  groupedItinerary,
+                  weatherMap,
+                ),
               ),
             ],
           );
@@ -2348,7 +2379,9 @@ class _ExpensesTabState extends State<ExpensesTab> {
 
   void _showAddExpenseDialog({Map<String, dynamic>? existingExpense}) {
     if (existingExpense != null) {
-      _amountController.text = existingExpense['amount'].toString();
+      _amountController.text = ((existingExpense['amount'] ?? 0) as num)
+          .toStringAsFixed(2);
+
       _selectedCurrency = existingExpense['currency'];
       _selectedCategory = existingExpense['category'];
       _isSplit = existingExpense['isSplit'];
@@ -2413,7 +2446,15 @@ class _ExpensesTabState extends State<ExpensesTab> {
                             const SizedBox(height: 8),
                             TextField(
                               controller: _amountController,
-                              keyboardType: TextInputType.number,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(
+                                  RegExp(r'^\d+\.?\d{0,2}'),
+                                ),
+                              ],
                               decoration: InputDecoration(
                                 labelText: 'Amount',
                                 labelStyle: GoogleFonts.poppins(
@@ -2429,7 +2470,17 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                   ),
                                 ),
                               ),
+                              onEditingComplete: () {
+                                final value = double.tryParse(
+                                  _amountController.text,
+                                );
+                                if (value != null) {
+                                  _amountController.text = value
+                                      .toStringAsFixed(2); // ✅ auto format
+                                }
+                              },
                             ),
+
                             const SizedBox(height: 8),
                             if (!isSoloTrip) ...[
                               // Only show split option for group trips
@@ -2634,18 +2685,12 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                 ).showSnackBar(
                                   SnackBar(
                                     content: Text(
-                                          'Please enter a valid amount',
-                                          style: GoogleFonts.poppins(
-                                            color: Color(0xFF6D4C41),
-                                            fontSize: 14,
-                                          ),
-                                        )
-                                        .animate() // ✅ animate the content, not the SnackBar
-                                        .fadeIn(
-                                          duration: const Duration(
-                                            milliseconds: 500,
-                                          ),
-                                        ),
+                                      'Please enter a valid amount',
+                                      style: GoogleFonts.poppins(
+                                        color: Color(0xFF6D4C41),
+                                        fontSize: 14,
+                                      ),
+                                    ),
                                     backgroundColor: Colors.redAccent,
                                     behavior: SnackBarBehavior.floating,
                                     shape: RoundedRectangleBorder(
@@ -2660,8 +2705,8 @@ class _ExpensesTabState extends State<ExpensesTab> {
                             if (_isSplit &&
                                 _splitType == 'custom' &&
                                 !isSoloTrip) {
-                              double totalCustomSplit = _customSplits.values
-                                  .reduce((a, b) => a + b);
+                              final totalCustomSplit = _customSplits.values
+                                  .fold<double>(0, (a, b) => a + b);
                               if ((totalCustomSplit - amount).abs() > 0.01) {
                                 if (dialogContext.mounted) {
                                   ScaffoldMessenger.of(
@@ -2669,18 +2714,12 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                   ).showSnackBar(
                                     SnackBar(
                                       content: Text(
-                                            'Custom split amounts must equal total amount',
-                                            style: GoogleFonts.poppins(
-                                              color: Color(0xFF6D4C41),
-                                              fontSize: 14,
-                                            ),
-                                          )
-                                          .animate() // ✅ animate the content, not the SnackBar
-                                          .fadeIn(
-                                            duration: const Duration(
-                                              milliseconds: 500,
-                                            ),
-                                          ),
+                                        'Custom split amounts must equal total amount',
+                                        style: GoogleFonts.poppins(
+                                          color: Color(0xFF6D4C41),
+                                          fontSize: 14,
+                                        ),
+                                      ),
                                       backgroundColor: Colors.redAccent,
                                       behavior: SnackBarBehavior.floating,
                                       shape: RoundedRectangleBorder(
@@ -2693,7 +2732,7 @@ class _ExpensesTabState extends State<ExpensesTab> {
                               }
                             }
 
-                            var expenseData = {
+                            final expenseData = {
                               'category': _selectedCategory,
                               'amount': amount,
                               'currency': _selectedCurrency,
@@ -2709,123 +2748,129 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                       ? _customSplits
                                       : null,
                               'createdAt': Timestamp.now(),
-                              'addedBy':
-                                  widget
-                                      .userId, // ✅ This tracks who added/paid for the expense
-                              // Remove the old paidBy logic since we're using addedBy now
+                              'addedBy': widget.userId,
                             };
 
-                            final expenseRef = FirebaseFirestore.instance
+                            final expenseCol = FirebaseFirestore.instance
                                 .collection('trips')
                                 .doc(widget.tripId)
                                 .collection('expenses');
 
+                            String expenseId;
+
+                            // ADD or UPDATE the expense document
                             if (existingExpense == null) {
-                              await expenseRef.add(expenseData);
+                              final newDoc = await expenseCol.add(expenseData);
+                              expenseId = newDoc.id;
+                            } else {
+                              expenseId =
+                                  (existingExpense['id']
+                                      as String); // <-- must be provided by caller
+                              final updateData =
+                                  Map<String, dynamic>.from(expenseData)
+                                    ..remove('createdAt')
+                                    ..['updatedAt'] =
+                                        FieldValue.serverTimestamp();
+                              await expenseCol
+                                  .doc(expenseId)
+                                  .update(updateData);
+                            }
 
-                              // Send notifications for split expenses
-                              if (_isSplit && !isSoloTrip) {
-                                final collaborators =
-                                    await _fetchCollaborators();
-                                final allMembers = [
-                                  widget.userId,
-                                  ...collaborators,
-                                ];
+                            // Notifications only when newly added (skip on edit)
+                            if (existingExpense == null &&
+                                _isSplit &&
+                                !isSoloTrip) {
+                              final collaborators = await _fetchCollaborators();
+                              final allMembers = [
+                                widget.userId,
+                                ...collaborators,
+                              ];
 
-                                // Get current user's username
-                                final currentUserDoc =
-                                    await FirebaseFirestore.instance
-                                        .collection('users')
-                                        .doc(widget.userId)
-                                        .get();
-                                final currentUsername =
-                                    currentUserDoc.data()?['username'] ??
-                                    'Someone';
+                              final currentUserDoc =
+                                  await FirebaseFirestore.instance
+                                      .collection('users')
+                                      .doc(widget.userId)
+                                      .get();
+                              final currentUsername =
+                                  currentUserDoc.data()?['username'] ??
+                                  'Someone';
 
-                                // Calculate split amount per person
-                                double splitAmountPerPerson;
-                                if (_splitType == 'custom') {
-                                  // For custom splits, send individual notifications with specific amounts
-                                  for (var member in allMembers) {
-                                    if (member != widget.userId) {
-                                      // Don't notify the person who added the expense
-                                      final memberSplitAmount =
-                                          _customSplits[member] ?? 0.0;
-                                      if (memberSplitAmount > 0) {
-                                        await FirebaseFirestore.instance
-                                            .collection('notifications')
-                                            .add({
-                                              'type': 'split_expense',
-                                              'tripId': widget.tripId,
-                                              'senderId': widget.userId,
-                                              'receiverId': member,
-                                              'status': 'new',
-                                              'createdAt':
-                                                  FieldValue.serverTimestamp(),
-                                              'message':
-                                                  '$currentUsername added a split expense: $_selectedCategory (MYR ${amount.toStringAsFixed(2)})',
-                                              'data': {
-                                                'amount': amount,
-                                                'category': _selectedCategory,
-                                                'splitAmount':
-                                                    memberSplitAmount,
-                                                'fromUsername': currentUsername,
-                                                'expenseId':
-                                                    expenseRef
-                                                        .id, // Store reference to expense
-                                              },
-                                            });
-                                      }
-                                    }
-                                  }
-                                } else {
-                                  // Equal split
-                                  splitAmountPerPerson =
-                                      amount / allMembers.length;
-                                  for (var member in allMembers) {
-                                    if (member != widget.userId) {
-                                      // Don't notify the person who added the expense
-                                      await FirebaseFirestore.instance
-                                          .collection('notifications')
-                                          .add({
-                                            'type': 'split_expense',
-                                            'tripId': widget.tripId,
-                                            'senderId': widget.userId,
-                                            'receiverId': member,
-                                            'status': 'new',
-                                            'createdAt':
-                                                FieldValue.serverTimestamp(),
-                                            'message':
-                                                '$currentUsername added a split expense: $_selectedCategory (MYR ${amount.toStringAsFixed(2)})',
-                                            'data': {
-                                              'amount': amount,
-                                              'category': _selectedCategory,
-                                              'splitAmount':
-                                                  splitAmountPerPerson,
-                                              'fromUsername': currentUsername,
-                                              'expenseId':
-                                                  expenseRef
-                                                      .id, // Store reference to expense
-                                            },
-                                          });
-                                    }
-                                  }
+                              if (_splitType == 'custom') {
+                                // Custom: notify with each person’s amount
+                                for (var member in allMembers) {
+                                  if (member == widget.userId) continue;
+                                  final memberSplitAmount =
+                                      _customSplits[member] ?? 0.0;
+                                  if (memberSplitAmount <= 0) continue;
+
+                                  await FirebaseFirestore.instance
+                                      .collection('notifications')
+                                      .add({
+                                        'type': 'split_expense',
+                                        'tripId': widget.tripId,
+                                        'senderId': widget.userId,
+                                        'receiverId': member,
+                                        'status': 'new',
+                                        'createdAt':
+                                            FieldValue.serverTimestamp(),
+                                        'message':
+                                            '$currentUsername added a split expense: $_selectedCategory (MYR ${amount.toStringAsFixed(2)})',
+                                        'data': {
+                                          'amount': amount,
+                                          'category': _selectedCategory,
+                                          'splitAmount': memberSplitAmount,
+                                          'fromUsername': currentUsername,
+                                          'expenseId':
+                                              expenseId, // ✅ correct doc id
+                                        },
+                                      });
+                                }
+                              } else {
+                                // Equal split
+                                final perPerson = amount / allMembers.length;
+                                for (var member in allMembers) {
+                                  if (member == widget.userId) continue;
+
+                                  await FirebaseFirestore.instance
+                                      .collection('notifications')
+                                      .add({
+                                        'type': 'split_expense',
+                                        'tripId': widget.tripId,
+                                        'senderId': widget.userId,
+                                        'receiverId': member,
+                                        'status': 'new',
+                                        'createdAt':
+                                            FieldValue.serverTimestamp(),
+                                        'message':
+                                            '$currentUsername added a split expense: $_selectedCategory (MYR ${amount.toStringAsFixed(2)})',
+                                        'data': {
+                                          'amount': amount,
+                                          'category': _selectedCategory,
+                                          'splitAmount': perPerson,
+                                          'fromUsername': currentUsername,
+                                          'expenseId':
+                                              expenseId, // ✅ correct doc id
+                                        },
+                                      });
                                 }
                               }
                             }
 
-                            if (dialogContext.mounted) {
+                            if (dialogContext.mounted)
                               Navigator.pop(dialogContext);
-                            }
 
-                            Future.delayed(Duration(milliseconds: 300), () {
-                              checkAndSendBudgetWarning(
-                                widget.tripId,
-                                widget.userId,
-                                context,
-                              );
-                            });
+                            Future.delayed(
+                              const Duration(milliseconds: 300),
+                              () {
+                                checkAndSendBudgetWarning(
+                                  widget.tripId,
+                                  widget.userId,
+                                  context,
+                                );
+                              },
+                            );
                           },
+
                           child: Text(
                             'Save',
                             style: GoogleFonts.poppins(
@@ -4980,6 +5025,7 @@ class _ExpensesTabState extends State<ExpensesTab> {
                             MaterialPageRoute(
                               builder:
                                   (context) => ExpensesBreakdownPage(
+                                    tripId: widget.tripId, // Add this line
                                     individualSpending: individualSpending,
                                     individualCategorySpending:
                                         freshIndividualCategorySpending,
@@ -5106,6 +5152,7 @@ class _ExpensesTabState extends State<ExpensesTab> {
                         var isSplit = data['isSplit'] ?? false;
                         var itineraryItemId = data['itineraryItemId'];
                         var isOthers = data['isOthers'] ?? false;
+                        var splitType = data['splitType'];
 
                         return FutureBuilder<String>(
                           future: _fetchPlaceName(itineraryItemId),
@@ -5131,6 +5178,55 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                     : nameSnapshot.data?.isNotEmpty == true
                                     ? nameSnapshot.data!
                                     : _selectedCategory;
+
+                            // Add this debug code right before the trailing Row widget in your expense list
+                            print(
+                              '🔍 Debugging expense buttons for ${expense.id}:',
+                            );
+                            print('   📋 Expense data: $data');
+                            print('   👤 AddedBy: "${data['addedBy']}"');
+                            print(
+                              '   👤 Current user: "${FirebaseAuth.instance.currentUser?.uid}"',
+                            );
+                            print(
+                              '   🔍 Data type - AddedBy: ${data['addedBy'].runtimeType}',
+                            );
+                            print(
+                              '   🔍 Data type - Current user: ${FirebaseAuth.instance.currentUser?.uid.runtimeType}',
+                            );
+                            print(
+                              '   ✅ Are they equal? ${data['addedBy'] == FirebaseAuth.instance.currentUser?.uid}',
+                            );
+                            print(
+                              '   🔍 Are they identical? ${identical(data['addedBy'], FirebaseAuth.instance.currentUser?.uid)}',
+                            );
+                            print(
+                              '   📏 AddedBy length: ${data['addedBy']?.toString().length}',
+                            );
+                            print(
+                              '   📏 Current user length: ${FirebaseAuth.instance.currentUser?.uid?.length}',
+                            );
+
+                            // Check for null values
+                            if (data['addedBy'] == null) {
+                              print('   ❌ AddedBy is null');
+                            }
+                            if (FirebaseAuth.instance.currentUser?.uid ==
+                                null) {
+                              print('   ❌ Current user UID is null');
+                            }
+
+                            // Check for whitespace or hidden characters
+                            if (data['addedBy'] != null &&
+                                FirebaseAuth.instance.currentUser?.uid !=
+                                    null) {
+                              final addedBy = data['addedBy'].toString().trim();
+                              final currentUser =
+                                  FirebaseAuth.instance.currentUser!.uid.trim();
+                              print(
+                                '   🧹 Trimmed comparison: "$addedBy" == "$currentUser" = ${addedBy == currentUser}',
+                              );
+                            }
 
                             return Card(
                               elevation: 2,
@@ -5160,14 +5256,14 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                       ),
                                     ),
                                     Text(
-                                      'Amount: $amount $currency',
+                                      'Amount: ${((amount ?? 0) as num).toStringAsFixed(2)} $currency',
                                       style: GoogleFonts.poppins(
                                         color: Colors.black54,
                                         fontSize: 12,
                                       ),
                                     ),
                                     Text(
-                                      'Split: ${isSplit ? "Yes" : "No"}',
+                                      'Split: ${isSplit ? (splitType ?? "equal") : "None"}',
                                       style: GoogleFonts.poppins(
                                         color: Colors.black54,
                                         fontSize: 12,
@@ -5175,136 +5271,177 @@ class _ExpensesTabState extends State<ExpensesTab> {
                                     ),
                                   ],
                                 ),
+
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    IconButton(
-                                      icon: Icon(
-                                        Icons.edit,
-                                        color: Color(0xFFD7CCC8),
-                                      ),
-                                      onPressed:
-                                          () => _showAddExpenseDialog(
+                                    if (data['addedBy'] ==
+                                        FirebaseAuth.instance.currentUser?.uid)
+                                      IconButton(
+                                        icon: Icon(
+                                          Icons.edit,
+                                          color: Color(0xFFD7CCC8),
+                                        ),
+                                        onPressed: () {
+                                          print(
+                                            '✏️ Edit button pressed for expense ${expense.id}',
+                                          );
+                                          _showAddExpenseDialog(
                                             existingExpense: {
                                               'id': expense.id,
                                               ...data,
                                             },
-                                          ),
-                                    ),
-                                    IconButton(
-                                      icon: Icon(
-                                        Icons.delete,
-                                        color: Colors.redAccent,
+                                          );
+                                        },
                                       ),
-                                      onPressed: () async {
-                                        bool confirmDelete = await showDialog(
-                                          context: context,
-                                          builder:
-                                              (context) => AlertDialog(
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
-                                                ),
-                                                backgroundColor: Colors.white,
-                                                title: Text(
-                                                  'Delete Expense',
-                                                  style: GoogleFonts.poppins(
-                                                    fontSize: 20,
-                                                    fontWeight: FontWeight.w600,
-                                                    color: Color(0xFF6D4C41),
-                                                  ),
-                                                ),
-                                                content: Text(
-                                                  'Are you sure you want to delete this expense?',
-                                                  style: GoogleFonts.poppins(
-                                                    color: Colors.black54,
-                                                    fontSize: 14,
-                                                  ),
-                                                ),
-                                                actions: [
-                                                  TextButton(
-                                                    onPressed:
-                                                        () => Navigator.pop(
-                                                          context,
-                                                          false,
-                                                        ),
-                                                    child: Text(
-                                                      'Cancel',
-                                                      style:
-                                                          GoogleFonts.poppins(
-                                                            color: Color(
-                                                              0xFF6D4C41,
-                                                            ),
-                                                          ),
-                                                    ),
-                                                  ),
-                                                  TextButton(
-                                                    onPressed:
-                                                        () => Navigator.pop(
-                                                          context,
-                                                          true,
-                                                        ),
-                                                    child: Text(
-                                                      'Delete',
-                                                      style:
-                                                          GoogleFonts.poppins(
-                                                            color:
-                                                                Colors
-                                                                    .redAccent,
-                                                          ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ).animate().fadeIn(
-                                                duration: const Duration(
-                                                  milliseconds: 500,
-                                                ),
-                                              ),
-                                        );
+                                    // TEMPORARY: Always show delete button for debugging
+                                    if (data['addedBy'] ==
+                                        FirebaseAuth.instance.currentUser?.uid)
+                                      IconButton(
+                                        icon: Icon(
+                                          Icons.delete,
+                                          color: Colors.redAccent,
+                                        ),
+                                        onPressed: () async {
+                                          print(
+                                            '🗑️ Delete button pressed for expense ${expense.id}',
+                                          );
 
-                                        if (confirmDelete == true) {
-                                          await FirebaseFirestore.instance
-                                              .collection('trips')
-                                              .doc(widget.tripId)
-                                              .collection('expenses')
-                                              .doc(expense.id)
-                                              .delete();
-                                          if (!mounted) return;
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Builder(
-                                                builder:
-                                                    (context) => Text(
-                                                      'Expense deleted',
-                                                      style:
-                                                          GoogleFonts.poppins(
-                                                            color: const Color(
-                                                              0xFF6D4C41,
-                                                            ),
-                                                            fontSize: 14,
+                                          bool confirmDelete = await showDialog(
+                                            context: context,
+                                            builder:
+                                                (context) => AlertDialog(
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          12,
+                                                        ),
+                                                  ),
+                                                  backgroundColor: Colors.white,
+                                                  title: Text(
+                                                    'Delete Expense',
+                                                    style: GoogleFonts.poppins(
+                                                      fontSize: 20,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: Color(0xFF6D4C41),
+                                                    ),
+                                                  ),
+                                                  content: Text(
+                                                    'Are you sure you want to delete this expense?',
+                                                    style: GoogleFonts.poppins(
+                                                      color: Colors.black54,
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                  actions: [
+                                                    TextButton(
+                                                      onPressed:
+                                                          () => Navigator.pop(
+                                                            context,
+                                                            false,
                                                           ),
-                                                    ).animate().fadeIn(
-                                                      duration: const Duration(
-                                                        milliseconds: 500,
+                                                      child: Text(
+                                                        'Cancel',
+                                                        style:
+                                                            GoogleFonts.poppins(
+                                                              color: Color(
+                                                                0xFF6D4C41,
+                                                              ),
+                                                            ),
                                                       ),
                                                     ),
-                                              ),
-                                              backgroundColor: const Color(
-                                                0xFFD7CCC8,
-                                              ),
-                                              behavior:
-                                                  SnackBarBehavior.floating,
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                            ),
+                                                    TextButton(
+                                                      onPressed:
+                                                          () => Navigator.pop(
+                                                            context,
+                                                            true,
+                                                          ),
+                                                      child: Text(
+                                                        'Delete',
+                                                        style:
+                                                            GoogleFonts.poppins(
+                                                              color:
+                                                                  Colors
+                                                                      .redAccent,
+                                                            ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ).animate().fadeIn(
+                                                  duration: const Duration(
+                                                    milliseconds: 500,
+                                                  ),
+                                                ),
                                           );
-                                        }
-                                      },
-                                    ),
+
+                                          if (confirmDelete == true) {
+                                            // Capture the messenger while this context is still mounted
+                                            final messenger =
+                                                ScaffoldMessenger.of(context);
+
+                                            try {
+                                              await FirebaseFirestore.instance
+                                                  .collection('trips')
+                                                  .doc(widget.tripId)
+                                                  .collection('expenses')
+                                                  .doc(expense.id)
+                                                  .delete();
+
+                                              // Safe to use even if the widget got disposed later
+                                              messenger.showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Expense deleted',
+                                                    style: GoogleFonts.poppins(
+                                                      color: const Color(
+                                                        0xFF6D4C41,
+                                                      ),
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                  backgroundColor: const Color(
+                                                    0xFFD7CCC8,
+                                                  ),
+                                                  behavior:
+                                                      SnackBarBehavior.floating,
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                  ),
+                                                ),
+                                              );
+                                            } catch (e) {
+                                              messenger.showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Delete failed: $e',
+                                                    style: GoogleFonts.poppins(
+                                                      color: const Color(
+                                                        0xFF6D4C41,
+                                                      ),
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                  backgroundColor: const Color(
+                                                    0xFFFFCDD2,
+                                                  ), // light red
+                                                  behavior:
+                                                      SnackBarBehavior.floating,
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        },
+                                      ),
                                   ],
                                 ),
                               ),

@@ -797,6 +797,7 @@ Future<String> _createPendingBooking({
   required DateTime checkOut,
   required int adults,
   required double? pricePerNight,
+
   String? roomType,
 }) async {
   if (tripId.trim().isEmpty) {
@@ -895,7 +896,13 @@ Future<void> onSaveTripPressed({
 
   await showBookingPromptBottomSheet(
     context: context,
-    trip: trip,
+    trip: {
+      ...trip,
+      'selectedRoomType': selectedHotel['selectedRoomType'],
+      'roomCount': selectedHotel['roomCount'],
+      'roomArrangement': selectedHotel['roomArrangement'],
+      'totalRoomPrice': selectedHotel['totalRoomPrice'],
+    },
     hotel: hotel,
     isSandbox: isSandbox,
   );
@@ -1184,7 +1191,8 @@ Future<void> showBookingPromptBottomSheet({
                         debugPrint(
                           "🟦 [Skip] h.id=${h['id']}  h.props.name=${h['properties']?['name']}  photo=${h['properties']?['primaryPhotoUrl']}",
                         );
-
+                        final selectedRoomType =
+                            trip['selectedRoomType'] as String?;
                         String pendingBookingId = '';
                         try {
                           pendingBookingId = await _createPendingBooking(
@@ -1196,7 +1204,7 @@ Future<void> showBookingPromptBottomSheet({
                             adults: adults,
                             pricePerNight:
                                 (trip['pricePerNight'] as num?)?.toDouble(),
-                            roomType: null,
+                            roomType: trip['selectedRoomType'],
                           );
                           debugPrint(
                             "✅ [Skip] pending booking created: $pendingBookingId",

@@ -227,7 +227,7 @@ Future<void> runForAllStates() async {
     'Penang': [
       'George Town',
       'Tanjung Bungah',
-      'Buttterworth',
+      'Butterworth',
       'Tanjung Tokong',
       'Balik Pulau',
       'Bayan Lepas',

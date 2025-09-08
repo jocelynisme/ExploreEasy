@@ -10,6 +10,7 @@ class PlaceDetailsSheet {
     BuildContext context, {
     required String areaId,
     required String placeId,
+    Map<String, dynamic>? embeddedPlaceData, // Add this parameter
     double radiusKm = 2.0,
     void Function(Map<String, dynamic> alt)? onSelectAlternate,
     List<Map<String, dynamic>>? prefetchedAlternateHotels,
@@ -17,7 +18,35 @@ class PlaceDetailsSheet {
     void Function(List<Map<String, dynamic>>)? onPreviewAlternateRestaurants,
     void Function(List<Map<String, dynamic>>)? onPreviewAlternateShops,
     VoidCallback? onClose,
+    Set<String>? selectedPlaceNames,
   }) {
+    // Validate required parameters
+    if (areaId.trim().isEmpty) {
+      debugPrint('❌ PlaceDetailsSheet: areaId is empty');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot show details: Area ID missing'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return Future.value();
+    }
+
+    if (placeId.trim().isEmpty) {
+      debugPrint('❌ PlaceDetailsSheet: placeId is empty');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot show details: Place ID missing'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return Future.value();
+    }
+
+    debugPrint(
+      '✅ PlaceDetailsSheet: Opening with areaId="$areaId", placeId="$placeId"',
+    );
+
     return showModalBottomSheet(
       context: context,
       useRootNavigator: true,
@@ -30,15 +59,17 @@ class PlaceDetailsSheet {
             hostContext: context,
             areaId: areaId,
             placeId: placeId,
+            embeddedPlaceData: embeddedPlaceData, // Pass the embedded data
             radiusKm: radiusKm,
             onSelectAlternate: onSelectAlternate,
             prefetchedAlternateHotels: prefetchedAlternateHotels,
             onPreviewAlternateHotels: onPreviewAlternateHotels,
             onPreviewAlternateRestaurants: onPreviewAlternateRestaurants,
             onPreviewAlternateShops: onPreviewAlternateShops,
+            selectedPlaceNames: selectedPlaceNames,
           ),
     ).whenComplete(() {
-      debugPrint('📍 PlaceDetailsSheet closed');
+      debugPrint('🏁 PlaceDetailsSheet closed');
       onClose?.call();
     });
   }
@@ -50,13 +81,14 @@ class _PlaceDetailsBody extends StatefulWidget {
   final String placeId;
   final double radiusKm;
   final void Function(Map<String, dynamic> alt)? onSelectAlternate;
-
+  final Set<String>? selectedPlaceNames;
   final List<Map<String, dynamic>>? prefetchedAlternateHotels; // NEW
   final void Function(List<Map<String, dynamic>> hotels)?
   onPreviewAlternateHotels; // NEW
   final void Function(List<Map<String, dynamic>>)?
   onPreviewAlternateRestaurants;
   final void Function(List<Map<String, dynamic>>)? onPreviewAlternateShops;
+  final Map<String, dynamic>? embeddedPlaceData;
 
   const _PlaceDetailsBody({
     super.key,
@@ -69,6 +101,8 @@ class _PlaceDetailsBody extends StatefulWidget {
     this.onPreviewAlternateHotels, // NEW
     this.onPreviewAlternateRestaurants,
     this.onPreviewAlternateShops,
+    this.selectedPlaceNames,
+    this.embeddedPlaceData,
   });
 
   @override
@@ -101,6 +135,23 @@ class _PlaceDetailsBodyState extends State<_PlaceDetailsBody> {
   }
 
   // --- helpers ---------------------------------------------------------------
+  bool _isPlaceSelected(String placeName) {
+    if (widget.selectedPlaceNames == null) return false;
+
+    // Normalize place name (remove prefixes like "Meal:", "Souvenir:")
+    final normalizedName =
+        placeName
+            .replaceFirst(RegExp(r'^(Meal|Souvenir):\s*'), '')
+            .trim()
+            .toLowerCase();
+
+    return widget.selectedPlaceNames!.any(
+      (selected) =>
+          selected.toLowerCase().contains(normalizedName) ||
+          normalizedName.contains(selected.toLowerCase()),
+    );
+  }
+
   bool _isHotelCategory(String? cat) {
     final c = (cat ?? '').toLowerCase();
     return c == 'hotel' ||
@@ -554,30 +605,96 @@ class _PlaceDetailsBodyState extends State<_PlaceDetailsBody> {
                     ],
 
                     // --- Quick actions -----------------------------------------------------
+                    // Replace the Quick actions section in place_details_sheet.dart with this enhanced version:
+
+                    // --- Quick actions -----------------------------------------------------
                     const SizedBox(height: 14),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 8,
-                      children: [
-                        if (website != null && website.isNotEmpty)
-                          OutlinedButton.icon(
-                            icon: const Icon(Icons.public),
-                            label: const Text('Website'),
-                            onPressed: () => _launchExternal(website),
-                          ),
-                        if (phone != null && phone.isNotEmpty)
-                          OutlinedButton.icon(
-                            icon: const Icon(Icons.call),
-                            label: const Text('Call'),
-                            onPressed: () => _launchTel(phone),
-                          ),
-                        if (mapsUrl != null && mapsUrl.isNotEmpty)
-                          OutlinedButton.icon(
-                            icon: const Icon(Icons.map),
-                            label: const Text('Open in Maps'),
-                            onPressed: () => _launchExternal(mapsUrl),
-                          ),
-                      ],
+                    Builder(
+                      builder: (context) {
+                        final isSelected = _isPlaceSelected(name);
+
+                        return Wrap(
+                          spacing: 12,
+                          runSpacing: 8,
+                          children: [
+                            if (website != null && website.isNotEmpty)
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.public),
+                                label: const Text('Website'),
+                                onPressed: () => _launchExternal(website),
+                              ),
+                            if (phone != null && phone.isNotEmpty)
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.call),
+                                label: const Text('Call'),
+                                onPressed: () => _launchTel(phone),
+                              ),
+                            if (mapsUrl != null && mapsUrl.isNotEmpty)
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.map),
+                                label: const Text('Open in Maps'),
+                                onPressed: () => _launchExternal(mapsUrl),
+                              ),
+                            // Add "Use instead" button if callback is provided
+                            if (widget.onSelectAlternate != null)
+                              ElevatedButton.icon(
+                                icon: Icon(
+                                  isSelected
+                                      ? Icons.check_circle
+                                      : Icons.swap_horiz,
+                                ),
+                                label: Text(
+                                  isSelected
+                                      ? 'Already selected'
+                                      : 'Use instead',
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor:
+                                      isSelected ? Colors.grey : Colors.green,
+                                  foregroundColor: Colors.white,
+                                ),
+                                onPressed:
+                                    isSelected
+                                        ? null
+                                        : () {
+                                          // Create the alternate data structure from current place
+                                          final alt = {
+                                            'properties': {
+                                              'name': name,
+                                              'address': address ?? '',
+                                              'category':
+                                                  data['category'] ??
+                                                  'attraction',
+                                              'rating': rating ?? 0.0,
+                                              'kind': kind,
+                                              'type': data['type'],
+                                              'price_level':
+                                                  data['price_level'],
+                                              // For hotels, include room data if available
+                                              if (data['roomTypes'] != null)
+                                                'roomTypes': data['roomTypes'],
+                                              if (data['travelersNo'] != null)
+                                                'travelersNo':
+                                                    data['travelersNo'],
+                                              if (data['emptyRoomsByDate'] !=
+                                                  null)
+                                                'emptyRoomsByDate':
+                                                    data['emptyRoomsByDate'],
+                                            },
+                                            'geometry': {
+                                              'coordinates': [lon, lat],
+                                            },
+                                            'placeId': widget.placeId,
+                                            'areaId': widget.areaId,
+                                          };
+
+                                          //   debugPrint('🔄 [MainView] Using place instead: ${alt['properties']['name']}');
+                                          widget.onSelectAlternate?.call(alt);
+                                        },
+                              ),
+                          ],
+                        );
+                      },
                     ),
 
                     // --- Similar / Alternate section --------------------------------------
@@ -728,47 +845,104 @@ class _PlaceDetailsBodyState extends State<_PlaceDetailsBody> {
                                             : 0,
                                   ),
                                   onView: () {
+                                    // Extract and validate placeId
+                                    final placeId =
+                                        (hp['placeId'] as String?) ??
+                                        (h['id'] as String?) ??
+                                        (h['placeId'] as String?) ??
+                                        '';
+
+                                    // Debug logging to see what we're getting
+                                    print(
+                                      "🔍 DEBUG: Attempting to view hotel details",
+                                    );
+                                    print("   - hp keys: ${hp.keys.toList()}");
+                                    print("   - h keys: ${h.keys.toList()}");
+                                    print(
+                                      "   - hp['placeId']: ${hp['placeId']}",
+                                    );
+                                    print("   - h['id']: ${h['id']}");
+                                    print("   - h['placeId']: ${h['placeId']}");
+                                    print("   - Final placeId: '$placeId'");
+                                    print(
+                                      "   - placeId.isEmpty: ${placeId.isEmpty}",
+                                    );
+
+                                    if (placeId.isEmpty) {
+                                      print(
+                                        "❌ ERROR: Empty placeId, cannot open details sheet",
+                                      );
+                                      ScaffoldMessenger.of(
+                                        widget.hostContext,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Cannot view details: Hotel ID missing',
+                                          ),
+                                          backgroundColor: Colors.red,
+                                        ),
+                                      );
+                                      return;
+                                    }
+
                                     Navigator.of(
                                       widget.hostContext,
                                       rootNavigator: true,
                                     ).pop();
-                                    WidgetsBinding.instance
-                                        .addPostFrameCallback((_) {
-                                          PlaceDetailsSheet.show(
-                                            widget.hostContext,
-                                            areaId: widget.areaId,
-                                            placeId:
-                                                (hp['placeId'] as String?) ??
-                                                (h['id'] as String?) ??
-                                                '',
-                                            radiusKm: widget.radiusKm,
-                                            onSelectAlternate:
-                                                widget.onSelectAlternate,
-                                            prefetchedAlternateHotels: pref,
-                                            onPreviewAlternateHotels:
-                                                widget.onPreviewAlternateHotels,
-                                          );
-                                        });
+                                    WidgetsBinding.instance.addPostFrameCallback((
+                                      _,
+                                    ) {
+                                      PlaceDetailsSheet.show(
+                                        widget.hostContext,
+                                        areaId: widget.areaId,
+                                        placeId:
+                                            placeId, // Use validated placeId
+                                        radiusKm: widget.radiusKm,
+                                        onSelectAlternate:
+                                            widget.onSelectAlternate,
+                                        prefetchedAlternateHotels: pref,
+                                        onPreviewAlternateHotels:
+                                            widget.onPreviewAlternateHotels,
+                                        onPreviewAlternateRestaurants:
+                                            widget
+                                                .onPreviewAlternateRestaurants,
+                                        onPreviewAlternateShops:
+                                            widget.onPreviewAlternateShops,
+                                      );
+                                    });
                                   },
                                   onUseInstead:
                                       widget.onSelectAlternate == null
                                           ? null
                                           : () {
-                                            final alt = {
-                                              'properties': {
-                                                'name': name,
-                                                'address': hp['address'] ?? '',
-                                                'category': 'hotel',
-                                                'rating':
-                                                    (hp['rating'] as num?)
-                                                        ?.toDouble() ??
-                                                    0.0,
-                                              },
-                                              'geometry': {
-                                                'coordinates': coords,
-                                              },
-                                              'distanceFromTapped': dist ?? 0.0,
+                                            // Pass the complete hotel data structure
+                                            final alt =
+                                                Map<String, dynamic>.from(
+                                                  h,
+                                                ); // Use the full hotel object
+
+                                            // Ensure the properties include all necessary data
+                                            alt['properties'] =
+                                                Map<String, dynamic>.from(hp);
+                                            alt['geometry'] = {
+                                              'coordinates': coords,
                                             };
+                                            alt['distanceFromTapped'] =
+                                                dist ?? 0.0;
+
+                                            debugPrint(
+                                              '🏨 [PlaceDetailsSheet] Passing hotel alt with keys: ${alt.keys.toList()}',
+                                            );
+                                            debugPrint(
+                                              '🏨 [PlaceDetailsSheet] Hotel properties keys: ${alt['properties'].keys.toList()}',
+                                            );
+                                            debugPrint(
+                                              '🏨 [PlaceDetailsSheet] roomTypes available: ${alt['properties']['roomTypes'] != null}',
+                                            );
+                                            debugPrint(
+                                              '🏨 [PlaceDetailsSheet] travelersNo available: ${alt['properties']['travelersNo'] != null}',
+                                            );
+
                                             widget.onSelectAlternate?.call(alt);
                                           },
                                 );
@@ -910,22 +1084,34 @@ class _PlaceDetailsBodyState extends State<_PlaceDetailsBody> {
                                 itemBuilder:
                                     (_, i) => _SimilarCard(
                                       item: items[i],
+                                      isSelected: _isPlaceSelected(
+                                        items[i].name,
+                                      ), // NEW
                                       onView: () {
                                         Navigator.of(
                                           widget.hostContext,
                                           rootNavigator: true,
                                         ).pop();
-                                        WidgetsBinding.instance
-                                            .addPostFrameCallback((_) {
-                                              PlaceDetailsSheet.show(
-                                                widget.hostContext,
-                                                areaId: items[i].areaId,
-                                                placeId: items[i].placeId,
-                                                radiusKm: widget.radiusKm,
-                                                onSelectAlternate:
-                                                    widget.onSelectAlternate,
-                                              );
-                                            });
+                                        WidgetsBinding.instance.addPostFrameCallback((
+                                          _,
+                                        ) {
+                                          PlaceDetailsSheet.show(
+                                            widget.hostContext,
+                                            areaId: items[i].areaId,
+                                            placeId: items[i].placeId,
+                                            radiusKm: widget.radiusKm,
+                                            onSelectAlternate:
+                                                widget
+                                                    .onSelectAlternate, // ✅ THIS WAS ALREADY CORRECT
+                                            onPreviewAlternateRestaurants:
+                                                widget
+                                                    .onPreviewAlternateRestaurants, // ✅ ADD THIS
+                                            onPreviewAlternateShops:
+                                                widget
+                                                    .onPreviewAlternateShops, // ✅ ADD THIS
+                                            // ✅ ADD THIS TOO
+                                          );
+                                        });
                                       },
                                       onUseInstead:
                                           widget.onSelectAlternate == null
@@ -1006,12 +1192,14 @@ class _SimilarCard extends StatelessWidget {
   final _SimilarItem item;
   final VoidCallback? onView;
   final VoidCallback? onUseInstead;
+  final bool isSelected; // NEW
 
   const _SimilarCard({
     super.key,
     required this.item,
     this.onView,
     this.onUseInstead,
+    this.isSelected = false,
   });
 
   @override

@@ -3,8 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloudinary_public/cloudinary_public.dart';
-import 'edit_profile_screen.dart'; // Adjust the path if needed
-
+import 'package:google_fonts/google_fonts.dart';
+import 'edit_profile_screen.dart';
 import 'dart:io';
 import 'main.dart';
 
@@ -31,10 +31,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String? _errorMessage;
   bool _isEditing = false;
   bool _isLoading = true;
-  bool _isUploadingImage = false; // Track image upload state
+  bool _isUploadingImage = false;
   String? _profileImageUrl;
   final _firestore = FirebaseFirestore.instance;
   final _picker = ImagePicker();
+
+  // Brand colors matching MyTripsScreen
+  final Color _brand = const Color(0xFFD7CCC8);
+  final Color _brandDark = const Color(0xFF6D4C41);
 
   @override
   void initState() {
@@ -53,9 +57,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _dobController.text = userData['dob'] ?? '';
           _phoneNumberController.text = userData['phoneNumber'] ?? '';
           _gender = userData['gender'];
-          _profileImageUrl = userData['profileImage'];
+          _profileImageUrl = userData['profilePicUrl'];
           _isLoading = false;
         });
+
+        // Debug print to check if URL exists
+        print('Profile Image URL: $_profileImageUrl');
       }
     } catch (e) {
       setState(() {
@@ -69,7 +76,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final pickedFile = await _picker.pickImage(
         source: ImageSource.gallery,
-        imageQuality: 80, // Compress image for faster upload
+        imageQuality: 80,
       );
 
       if (pickedFile != null) {
@@ -78,7 +85,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _isUploadingImage = true;
         });
 
-        // Upload immediately when image is picked
         await _uploadProfilePicToCloudinary();
       }
     } catch (e) {
@@ -89,7 +95,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // Upload to Cloudinary instead of Firebase Storage
   Future<void> _uploadProfilePicToCloudinary() async {
     if (_profilePic == null) return;
 
@@ -97,43 +102,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
       print('🚀 Starting Cloudinary upload...');
 
       CloudinaryResponse response = await cloudinary.uploadFile(
-        CloudinaryFile.fromFile(
-          _profilePic!.path,
-          folder: 'profiles',
-          // Add timestamp to make each upload unique
-          publicId:
-              'profile_${widget.userId}_${DateTime.now().millisecondsSinceEpoch}',
-        ),
+        CloudinaryFile.fromFile(_profilePic!.path),
       );
 
       final imageUrl = response.secureUrl;
       print('✅ Image uploaded to Cloudinary: $imageUrl');
 
-      // Apply transformations for profile picture (300x300, face-centered)
-      final transformedUrl = imageUrl.replaceFirst(
-        '/upload/',
-        '/upload/w_300,h_300,c_fill,g_face/',
-      );
-
-      // Save to Firestore immediately (profileImage field is used)
+      // Save to Firestore with consistent field name
       await _firestore.collection('users').doc(widget.userId).update({
-        'profileImage': transformedUrl, // Use ONLY profileImage field
+        'profilePicUrl': imageUrl, // Use consistent field name
         'lastUpdated': FieldValue.serverTimestamp(),
       });
 
       print('✅ Profile image URL saved to Firestore');
 
       setState(() {
-        _profilePic = null; // Clear local file
+        _profileImageUrl = imageUrl; // Update local state
+        _profilePic = null;
         _isUploadingImage = false;
         _errorMessage = null;
       });
 
-      // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✅ Profile picture updated!'),
-          backgroundColor: Colors.green,
+        SnackBar(
+          content: Text(
+            'Profile picture updated!',
+            style: GoogleFonts.poppins(color: Colors.white),
+          ),
+          backgroundColor: _brandDark,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
       );
     } catch (e) {
@@ -146,8 +144,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Upload failed: $e'),
+          content: Text(
+            'Upload failed: $e',
+            style: GoogleFonts.poppins(color: Colors.white),
+          ),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
       );
     }
@@ -168,7 +171,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         'dob': _dobController.text.trim(),
         'gender': _gender,
         'phoneNumber': _phoneNumberController.text.trim(),
-        // Profile image is already updated via _uploadProfilePicToCloudinary
         'lastUpdated': FieldValue.serverTimestamp(),
       });
 
@@ -178,7 +180,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile updated successfully!')),
+        SnackBar(
+          content: Text(
+            'Profile updated successfully!',
+            style: GoogleFonts.poppins(color: Colors.white),
+          ),
+          backgroundColor: _brandDark,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
       );
     } catch (e) {
       setState(() {
@@ -197,155 +207,287 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final lightBrown = const Color(0xFFD7CCC8);
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: const Color(0xFFF7F7F7),
       appBar: AppBar(
-        title: const Text('Profile'),
-        backgroundColor: lightBrown,
-        foregroundColor: Colors.black,
+        title: Text(
+          'My Profile',
+          style: GoogleFonts.poppins(
+            fontWeight: FontWeight.bold,
+            fontSize: 24,
+            shadows: [
+              Shadow(
+                color: Colors.black12,
+                blurRadius: 4,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+        ),
+        backgroundColor: Colors.white,
+        foregroundColor: _brandDark,
+        elevation: 0,
+        centerTitle: true,
       ),
       body:
           _isLoading
-              ? const Center(child: CircularProgressIndicator())
+              ? Center(child: CircularProgressIndicator(color: _brandDark))
               : SingleChildScrollView(
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
-                    Center(
-                      child: Stack(
-                        children: [
-                          // Profile Picture Circle
-                          CircleAvatar(
-                            radius: 50,
-                            backgroundImage:
-                                _profilePic != null
-                                    ? FileImage(_profilePic!)
-                                    : (_profileImageUrl != null
-                                        ? NetworkImage(_profileImageUrl!)
-                                        : null),
-                            backgroundColor: Colors.grey.shade300,
-                            child:
-                                (_profilePic == null &&
-                                        _profileImageUrl == null)
-                                    ? const Icon(Icons.person, size: 50)
-                                    : null,
+                    // Profile Picture Card
+                    Card(
+                      elevation: 4,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Container(
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          gradient: LinearGradient(
+                            colors: [Color(0xFFE8DDD4), Color(0xFFD7CCC8)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
                           ),
-
-                          // Upload progress indicator
-                          if (_isUploadingImage)
-                            Positioned.fill(
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.black54,
-                                  shape: BoxShape.circle,
+                        ),
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          children: [
+                            Stack(
+                              children: [
+                                CircleAvatar(
+                                  radius: 60,
+                                  backgroundImage:
+                                      _profilePic != null
+                                          ? FileImage(_profilePic!)
+                                          : (_profileImageUrl != null &&
+                                                  _profileImageUrl!.isNotEmpty
+                                              ? NetworkImage(_profileImageUrl!)
+                                              : null),
+                                  backgroundColor: Colors.white.withOpacity(
+                                    0.8,
+                                  ),
+                                  child:
+                                      (_profilePic == null &&
+                                              (_profileImageUrl == null ||
+                                                  _profileImageUrl!.isEmpty))
+                                          ? Icon(
+                                            Icons.person,
+                                            size: 60,
+                                            color: _brandDark,
+                                          )
+                                          : null,
                                 ),
-                                child: const Center(
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 3,
+
+                                // Camera button
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: GestureDetector(
+                                    onTap: _pickImage,
+                                    child: Container(
+                                      padding: EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: _brandDark,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: Colors.white,
+                                          width: 2,
+                                        ),
+                                      ),
+                                      child: Icon(
+                                        Icons.camera_alt,
+                                        color: Colors.white,
+                                        size: 20,
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ),
+
+                                // Upload progress indicator
+                                if (_isUploadingImage)
+                                  Positioned.fill(
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Center(
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 3,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
-                        ],
+
+                            const SizedBox(height: 16),
+
+                            if (_isUploadingImage)
+                              Text(
+                                'Uploading image...',
+                                style: GoogleFonts.poppins(
+                                  color: _brandDark,
+                                  fontStyle: FontStyle.italic,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 8),
 
-                    // Upload status text
-                    if (_isUploadingImage)
-                      const Text(
-                        'Uploading image...',
-                        style: TextStyle(
-                          color: Colors.blue,
-                          fontStyle: FontStyle.italic,
-                        ),
+                    const SizedBox(height: 24),
+
+                    // Profile Information Card
+                    Card(
+                      elevation: 4,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
                       ),
-                    const SizedBox(height: 20),
-
-                    // Text fields or display rows for other user info
-                    _isEditing
-                        ? Column(
-                          children: [
-                            _buildTextField('Username', _usernameController),
-                            _buildTextField(
-                              'Date of Birth (YYYY-MM-DD)',
-                              _dobController,
-                            ),
-                            _buildDropdownField(),
-                            _buildTextField(
-                              'Phone Number',
-                              _phoneNumberController,
-                            ),
-                          ],
-                        )
-                        : Column(
+                      child: Container(
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          gradient: LinearGradient(
+                            colors: [Colors.white, Color(0xFFFAFAFA)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                        ),
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _buildDisplayRow(
+                            Text(
+                              'Profile Information',
+                              style: GoogleFonts.poppins(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                                color: _brandDark,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+
+                            _buildInfoRow(
                               'Username',
                               _usernameController.text,
+                              Icons.person_outline,
                             ),
-                            _buildDisplayRow(
+                            _buildInfoRow(
                               'Date of Birth',
                               _dobController.text,
+                              Icons.cake_outlined,
                             ),
-                            _buildDisplayRow('Gender', _gender ?? 'Not set'),
-                            _buildDisplayRow(
+                            _buildInfoRow(
+                              'Gender',
+                              _gender ?? 'Not set',
+                              Icons.wc_outlined,
+                            ),
+                            _buildInfoRow(
                               'Phone Number',
                               _phoneNumberController.text,
+                              Icons.phone_outlined,
                             ),
                           ],
                         ),
-                    const SizedBox(height: 16),
+                      ),
+                    ),
 
+                    const SizedBox(height: 24),
+
+                    // Error Message
                     if (_errorMessage != null)
                       Container(
-                        padding: const EdgeInsets.all(12),
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
                           color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: Colors.red.shade200),
                         ),
-                        child: Text(
-                          _errorMessage!,
-                          style: const TextStyle(color: Colors.red),
+                        child: Row(
+                          children: [
+                            Icon(Icons.error_outline, color: Colors.red),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                _errorMessage!,
+                                style: GoogleFonts.poppins(
+                                  color: Colors.red.shade700,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
 
-                    const SizedBox(height: 16),
-
+                    // Action Buttons
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: lightBrown,
-                            foregroundColor: Colors.black,
-                          ),
-                          onPressed: () async {
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder:
-                                    (context) => EditProfileScreen(
-                                      userId: widget.userId,
-                                    ),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _brandDark,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
                               ),
-                            );
-                            _fetchUserProfile(); // Refresh profile data
-                          },
-                          child: const Text('Edit Profile'),
-                        ),
-                        const SizedBox(width: 16),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.redAccent,
-                            foregroundColor: Colors.white,
+                              elevation: 4,
+                            ),
+                            onPressed: () async {
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder:
+                                      (context) => EditProfileScreen(
+                                        userId: widget.userId,
+                                      ),
+                                ),
+                              );
+                              _fetchUserProfile();
+                            },
+                            icon: Icon(Icons.edit),
+                            label: Text(
+                              'Edit Profile',
+                              style: GoogleFonts.poppins(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
+                              ),
+                            ),
                           ),
-                          onPressed: _logout,
-                          child: const Text('Logout'),
+                        ),
+
+                        const SizedBox(width: 16),
+
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade600,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              elevation: 4,
+                            ),
+                            onPressed: _logout,
+                            icon: Icon(Icons.logout),
+                            label: Text(
+                              'Logout',
+                              style: GoogleFonts.poppins(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -355,44 +497,44 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildTextField(String label, TextEditingController controller) {
+  Widget _buildInfoRow(String label, String value, IconData icon) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      child: TextField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDropdownField() {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: DropdownButtonFormField<String>(
-        value: _gender,
-        decoration: const InputDecoration(
-          labelText: 'Gender',
-          border: OutlineInputBorder(),
-        ),
-        items:
-            ['Male', 'Female', 'Other'].map((gender) {
-              return DropdownMenuItem(value: gender, child: Text(gender));
-            }).toList(),
-        onChanged: (value) => setState(() => _gender = value),
-      ),
-    );
-  }
-
-  Widget _buildDisplayRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
-          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.bold)),
-          Expanded(child: Text(value)),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: _brand.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: _brandDark, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: GoogleFonts.poppins(
+                    fontSize: 12,
+                    color: Colors.black54,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value.isEmpty ? 'Not set' : value,
+                  style: GoogleFonts.poppins(
+                    fontSize: 16,
+                    color: _brandDark,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );

@@ -13,6 +13,7 @@ import 'booking_flow.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'dart:math' as math;
 
 // ------------ PLAN STYLE ------------
 enum PlanStyle { foodHeavy, balanced, attractionSeeking, shoppingLover }
@@ -590,6 +591,21 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         (day < dailyPoints.length) ? dailyPoints[day] : const <LatLng>[];
     if (names.isEmpty || points.isEmpty) return const SizedBox.shrink();
 
+    String? dayArea;
+    try {
+      // Find non-hotel picks for this day (sequence > 0)
+      final dayActivityPicks = tripPicks.where(
+        (pick) =>
+            (pick['dayIndex'] ?? 0) == day + 1 && (pick['sequence'] ?? 0) > 0,
+      );
+
+      if (dayActivityPicks.isNotEmpty) {
+        dayArea = dayActivityPicks.first['area'] as String?;
+      }
+    } catch (e) {
+      dayArea = null;
+    }
+
     // Keep your existing logic for leg calculations
     final leg = <double>[];
     for (int i = 0; i + 1 < points.length; i++) {
@@ -628,13 +644,41 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Day ${day + 1}',
-                    style: GoogleFonts.poppins(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        'Day ${day + 1}',
+                        style: GoogleFonts.poppins(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                      if (dayArea != null) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Text(
+                            dayArea,
+                            style: GoogleFonts.poppins(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   Text(
                     dateText,
@@ -2887,6 +2931,28 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     return filteredAttractions;
   }
 
+  Set<String> _getSelectedPlaceNames() {
+    final selectedPlaces = <String>{};
+
+    // Add all places from daily itinerary
+    for (int d = 0; d < dailyNames.length; d++) {
+      for (int i = 0; i < dailyNames[d].length; i++) {
+        selectedPlaces.add(dailyNames[d][i]);
+      }
+    }
+
+    // Also add selected hotel name if available
+    if (selectedHotel != null) {
+      final hotelName = selectedHotel!['properties']?['name'];
+      if (hotelName != null) {
+        selectedPlaces.add(hotelName.toString());
+      }
+    }
+
+    debugPrint('🔍 Current selected places: ${selectedPlaces.toList()}');
+    return selectedPlaces;
+  }
+
   Future<void> _openPlaceDetailsSheetByIds({
     required int day,
     required int index, // 0 = hotel, >=1 = attractions
@@ -3175,10 +3241,24 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       areaId: areaId,
       placeId: placeId,
       radiusKm: 2.0,
+      selectedPlaceNames: _getSelectedPlaceNames(), // ADD THIS LINE
       onSelectAlternate: (alt) {
         Navigator.of(context).pop();
+
+        final isHotel = _isHotelPlace(alt);
         final cat =
             (alt['properties']?['category'] ?? '').toString().toLowerCase();
+
+        debugPrint(
+          '🧭 onSelectAlternate: cat="$cat", isHotel=$isHotel, '
+          'name="${alt['properties']?['name']}"',
+        );
+
+        if (isHotel) {
+          _replaceHotelAcrossAllDays(alt: alt);
+          return;
+        }
+
         if (cat == 'restaurant' || cat == 'food' || cat == 'cafe') {
           _replaceRestaurantStop(day: day, index: index, alt: alt);
         } else if (cat == 'souvenir' || cat == 'shop' || cat == 'store') {
@@ -3187,6 +3267,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           _replaceAttractionStop(day: day, index: index, alt: alt);
         }
       },
+
       prefetchedAlternateHotels: altHotels,
       onPreviewAlternateHotels: (list) {
         debugPrint('🏨 Previewing ${list.length} alternate hotels');
@@ -4878,6 +4959,146 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     );
   }
 
+  bool _isHotelPlace(Map<String, dynamic> p) {
+    final name = (p['properties']?['name'] ?? '').toString().toLowerCase();
+    final cat = (p['properties']?['category'] ?? '').toString().toLowerCase();
+    final typ = (p['properties']?['type'] ?? '').toString().toLowerCase();
+
+    // Be permissive: different sources label hotels differently
+    if (cat.contains('accommodation') ||
+        cat.contains('hotel') ||
+        cat.contains('lodging'))
+      return true;
+    if (typ.contains('accommodation') || typ.contains('lodging')) return true;
+    if (name.contains('hotel') ||
+        name.contains('resort') ||
+        name.contains('inn') ||
+        name.contains('hostel'))
+      return true;
+    return false;
+  }
+
+  void _replaceHotelAcrossAllDays({required Map<String, dynamic> alt}) {
+    try {
+      // Extract coords & name
+      final coords = alt['geometry']?['coordinates'] as List?;
+      if (coords == null || coords.length < 2) {
+        debugPrint('❌ [hotel] alt has no coordinates: $alt');
+        return;
+      }
+      final newStart = LatLng(
+        (coords[1] as num).toDouble(),
+        (coords[0] as num).toDouble(),
+      );
+      final name = (alt['properties']?['name'] ?? 'Hotel').toString();
+
+      debugPrint(
+        '🏨 [hotel] APPLY TO ALL DAYS -> $name @ ${newStart.latitude},${newStart.longitude}',
+      );
+      debugPrint(
+        '🏨 [hotel] APPLY TO ALL DAYS -> $name @ ${newStart.latitude},${newStart.longitude}',
+      );
+
+      // Debug: Check what pricing data the alt hotel has
+      debugPrint('🏨 [hotel] Alt hotel data check:');
+      debugPrint('   - alt keys: ${alt.keys.toList()}');
+      debugPrint('   - alt[roomPrice]: ${alt['roomPrice']}');
+      debugPrint('   - alt[selectedRoomType]: ${alt['selectedRoomType']}');
+      debugPrint(
+        '   - alt properties roomTypes: ${alt['properties']?['roomTypes']}',
+      );
+
+      // Keep current as reference (for the purple pin, etc.)
+      referenceHotel = selectedHotel;
+
+      // Ensure the new selectedHotel has pricing data
+      selectedHotel = Map<String, dynamic>.from(alt);
+
+      // If roomPrice is missing from alt, try to extract it from roomTypes
+      if (selectedHotel!['roomPrice'] == null) {
+        debugPrint(
+          '🏨 [hotel] roomPrice missing, attempting to extract from roomTypes...',
+        );
+
+        final roomTypes = alt['properties']?['roomTypes'];
+        final selectedRoomType = alt['selectedRoomType'];
+
+        if (roomTypes != null && selectedRoomType != null) {
+          final roomData = roomTypes[selectedRoomType];
+          if (roomData != null && roomData['price'] != null) {
+            final price = (roomData['price'] as num?)?.toDouble();
+            selectedHotel!['roomPrice'] = price;
+            debugPrint(
+              '🏨 [hotel] Extracted roomPrice: $price for roomType: $selectedRoomType',
+            );
+          }
+        }
+      }
+
+      // Final verification
+      debugPrint(
+        '🏨 [hotel] Final selectedHotel roomPrice: ${selectedHotel!['roomPrice']}',
+      );
+      debugPrint(
+        '🏨 [hotel] Final selectedHotel selectedRoomType: ${selectedHotel!['selectedRoomType']}',
+      );
+      debugPrint(
+        '🏨 [hotel] previous selected=${selectedHotel?['properties']?['name']}, reference=${referenceHotel?['properties']?['name']}',
+      );
+
+      // // Keep current as reference (for the purple pin, etc.)
+      // referenceHotel = selectedHotel;
+      // selectedHotel = alt;
+
+      // Update every day's index 0
+      for (int d = 0; d < dailyPoints.length; d++) {
+        if (dailyPoints[d].isEmpty) continue;
+
+        debugPrint(
+          '  ↳ day ${d + 1} BEFORE: '
+          '${dailyPoints[d][0].latitude},${dailyPoints[d][0].longitude}',
+        );
+
+        dailyPoints[d][0] = newStart;
+
+        if (d < dailyNames.length && dailyNames[d].isNotEmpty) {
+          dailyNames[d][0] = name;
+        } else {
+          // Guard: ensure structure exists
+          while (d >= dailyNames.length) {
+            dailyNames.add(<String>[]);
+          }
+          if (dailyNames[d].isEmpty)
+            dailyNames[d] = [name];
+          else
+            dailyNames[d][0] = name;
+        }
+
+        debugPrint(
+          '  ↳ day ${d + 1}  AFTER: '
+          '${dailyPoints[d][0].latitude},${dailyPoints[d][0].longitude}',
+        );
+      }
+
+      // Center & refresh
+      _mapController.move(newStart, 16);
+      _hardRefreshMap();
+      _hardRefreshItinerary();
+
+      // Sanity snapshot
+      if (dailyPoints.isNotEmpty && dailyPoints[0].isNotEmpty) {
+        debugPrint(
+          '✅ [hotel] sanity: day1 start now '
+          '${dailyPoints[0][0].latitude},${dailyPoints[0][0].longitude}',
+        );
+      }
+      _debugSnapshotAfterHotelChange();
+    } catch (e, st) {
+      debugPrint('❌ [hotel] failed to apply to all days: $e');
+      debugPrint(st.toString());
+    }
+  }
+
   // Rebuildable map block (toggle + map). Call this whenever we need a fresh instance.
   Widget _buildMapMessage() {
     return StatefulBuilder(
@@ -5204,18 +5425,21 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                         height: 44,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTap: () {
+                          onTap: () async {
                             print(
                               "🟣 [tap ref-pin] ${referenceHotel!['properties']?['name']}",
                             );
-                            showModalBottomSheet(
-                              context: context,
-                              builder:
-                                  (_) => _buildHotelInfoSheet(
-                                    hotel: referenceHotel!,
-                                    label: "Previous Hotel",
-                                    color: Colors.purple,
-                                  ),
+
+                            // Get hotel details for place details sheet
+                            final hotelName =
+                                referenceHotel!['properties']?['name'] ??
+                                'Hotel';
+
+                            await _openPlaceDetailsSheetByIds(
+                              day: 0, // Hotels are at day 0, index 0
+                              index: 0,
+                              name: hotelName,
+                              latLng: referenceHotelCoords!,
                             );
                           },
                           child: const Icon(
@@ -5237,18 +5461,21 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                         height: 44,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTap: () {
+                          onTap: () async {
                             print(
                               "🔴 [tap selected-pin] ${selectedHotel!['properties']?['name']}",
                             );
-                            showModalBottomSheet(
-                              context: context,
-                              builder:
-                                  (_) => _buildHotelInfoSheet(
-                                    hotel: selectedHotel!,
-                                    label: "Selected Hotel",
-                                    color: Colors.red,
-                                  ),
+
+                            // Get hotel details for place details sheet
+                            final hotelName =
+                                selectedHotel!['properties']?['name'] ??
+                                'Hotel';
+
+                            await _openPlaceDetailsSheetByIds(
+                              day: 0, // Hotels are at day 0, index 0
+                              index: 0,
+                              name: hotelName,
+                              latLng: selectedHotelCoords!,
                             );
                           },
                           child: const Icon(
@@ -5593,6 +5820,30 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     return LatLng((coords[1] as num).toDouble(), (coords[0] as num).toDouble());
   }
 
+  void _debugSnapshotAfterHotelChange() {
+    debugPrint('====== SNAPSHOT AFTER HOTEL CHANGE ======');
+    final newHotelName = (selectedHotel?['properties']?['name'] ?? '(null)');
+    final refHotelName = (referenceHotel?['properties']?['name'] ?? '(null)');
+    debugPrint('selectedHotel = $newHotelName');
+    debugPrint('referenceHotel = $refHotelName');
+
+    for (int d = 0; d < dailyPoints.length; d++) {
+      if (dailyPoints[d].isEmpty) {
+        debugPrint('Day ${d + 1}: [NO POINTS]');
+        continue;
+      }
+      final name =
+          (d < dailyNames.length && dailyNames[d].isNotEmpty)
+              ? dailyNames[d][0]
+              : '(unknown)';
+      debugPrint(
+        'Day ${d + 1} START -> ${dailyPoints[d][0].latitude},'
+        '${dailyPoints[d][0].longitude} | name="$name"',
+      );
+    }
+    debugPrint('=========================================');
+  }
+
   // category heuristics (works even if curated docs didn't stamp 'category')
   bool _isRestaurantDoc(Map<String, dynamic> p) {
     final props = (p['properties'] ?? {}) as Map<String, dynamic>;
@@ -5675,14 +5926,13 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     5: {'min': 4.5, 'max': 5.0}, // 5 star range
   };
 
-  // Modified selectSuitableRoomType function
-  String? selectSuitableRoomType({
+  // Enhanced room selection that handles groups larger than 4
+  Map<String, dynamic>? selectSuitableRoomType({
     required Map<String, dynamic> travelersNo,
     required Map<String, dynamic> roomTypes,
     required int travelers,
-    required double
-    hotelRating, // Changed from accommodationBudget to hotelRating
-    required int selectedLevel, // Add selected level parameter
+    required double hotelRating,
+    required int selectedLevel,
   }) {
     print(
       "💡 Travelers: $travelers | Hotel Rating: $hotelRating | Selected Level: $selectedLevel",
@@ -5706,31 +5956,176 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       return null;
     }
 
-    // ✅ Case 1: More than 2 travelers → Only consider family room
-    if (travelers > 2) {
-      int capacity = (travelersNo['family'] as num?)?.toInt() ?? 0;
-      print("🏠 Family Room → Capacity: $capacity, Rating: $hotelRating");
-      if (travelers <= capacity) return 'family';
+    // Get capacity and pricing data
+    int singleCapacity = (travelersNo['single'] as num?)?.toInt() ?? 0;
+    int familyCapacity = (travelersNo['family'] as num?)?.toInt() ?? 0;
+    double? singlePrice = (roomTypes['single']?['price'] as num?)?.toDouble();
+    double? familyPrice = (roomTypes['family']?['price'] as num?)?.toDouble();
+
+    // Get minimum price requirements for selected level
+    double minSinglePrice = singleRoomCaps[selectedLevel] ?? 200.0;
+    double minFamilyPrice = familyRoomCaps[selectedLevel] ?? 400.0;
+
+    print(
+      "🏠 Single Room → Capacity: $singleCapacity, Price: $singlePrice, Min Required: $minSinglePrice",
+    );
+    print(
+      "🏠 Family Room → Capacity: $familyCapacity, Price: $familyPrice, Min Required: $minFamilyPrice",
+    );
+
+    // Check if rooms meet price requirements
+    bool singleMeetsPrice =
+        singlePrice != null && singlePrice >= minSinglePrice;
+    bool familyMeetsPrice =
+        familyPrice != null && familyPrice >= minFamilyPrice;
+
+    // ✅ Case 1: Small groups (1-2 travelers) - prefer single room
+    if (travelers <= 2) {
+      if (travelers <= singleCapacity && singleMeetsPrice) {
+        return {
+          'roomType': 'single',
+          'roomCount': 1,
+          'totalPrice': singlePrice,
+          'pricePerNight': singlePrice,
+          'arrangement': '1 single room for $travelers travelers',
+        };
+      }
+      // Fallback to family room if single doesn't work
+      if (travelers <= familyCapacity && familyMeetsPrice) {
+        return {
+          'roomType': 'family',
+          'roomCount': 1,
+          'totalPrice': familyPrice,
+          'pricePerNight': familyPrice,
+          'arrangement': '1 family room for $travelers travelers',
+        };
+      }
       return null;
     }
 
-    // ✅ Case 2: 2 or fewer travelers → Prefer single, fallback to family
-    int singleCapacity = (travelersNo['single'] as num?)?.toInt() ?? 0;
-    print("🛏️ Single Room → Capacity: $singleCapacity, Rating: $hotelRating");
-    if (travelers <= singleCapacity) {
-      return 'single';
+    // ✅ Case 2: Medium groups (3-4 travelers) - use family room
+    if (travelers <= 4) {
+      if (travelers <= familyCapacity && familyMeetsPrice) {
+        return {
+          'roomType': 'family',
+          'roomCount': 1,
+          'totalPrice': familyPrice,
+          'pricePerNight': familyPrice,
+          'arrangement': '1 family room for $travelers travelers',
+        };
+      }
+      return null;
     }
 
-    // fallback to family room if single is not suitable
-    int familyCapacity = (travelersNo['family'] as num?)?.toInt() ?? 0;
+    // ✅ Case 3: Large groups (5+ travelers) - calculate multiple rooms
     print(
-      "🏠 Family Room (fallback) → Capacity: $familyCapacity, Rating: $hotelRating",
+      "🏨 Large group detected ($travelers travelers) - calculating multiple rooms",
     );
-    if (travelers <= familyCapacity) {
-      return 'family';
+
+    List<Map<String, dynamic>> roomOptions = [];
+
+    // Option 1: Multiple family rooms only (if available)
+    if (familyCapacity > 0 && familyMeetsPrice) {
+      int familyRoomsNeeded = (travelers / familyCapacity).ceil();
+      double totalFamilyPrice = familyPrice! * familyRoomsNeeded;
+
+      roomOptions.add({
+        'roomType': 'family',
+        'roomCount': familyRoomsNeeded,
+        'totalPrice': totalFamilyPrice,
+        'pricePerNight': totalFamilyPrice,
+        'arrangement':
+            '$familyRoomsNeeded family rooms for $travelers travelers',
+        'costPerPerson': totalFamilyPrice / travelers,
+      });
     }
 
-    return null;
+    // Option 2: Multiple single rooms only (if available)
+    if (singleCapacity > 0 && singleMeetsPrice) {
+      int singleRoomsNeeded = (travelers / singleCapacity).ceil();
+      double totalSinglePrice = singlePrice! * singleRoomsNeeded;
+
+      roomOptions.add({
+        'roomType': 'single',
+        'roomCount': singleRoomsNeeded,
+        'totalPrice': totalSinglePrice,
+        'pricePerNight': totalSinglePrice,
+        'arrangement':
+            '$singleRoomsNeeded single rooms for $travelers travelers',
+        'costPerPerson': totalSinglePrice / travelers,
+      });
+    }
+
+    // Option 3: Mix of family and single rooms (if both available)
+    if (familyCapacity > 0 &&
+        familyMeetsPrice &&
+        singleCapacity > 0 &&
+        singleMeetsPrice) {
+      // Use as many family rooms as possible, then single rooms for remainder
+      int familyRooms = travelers ~/ familyCapacity;
+      int remainingTravelers = travelers % familyCapacity;
+      int singleRooms =
+          remainingTravelers > 0
+              ? (remainingTravelers / singleCapacity).ceil()
+              : 0;
+
+      // Only add this option if it makes sense (doesn't exceed capacity)
+      if ((familyRooms * familyCapacity + singleRooms * singleCapacity) >=
+          travelers) {
+        double totalMixPrice =
+            (familyPrice! * familyRooms) + (singlePrice! * singleRooms);
+
+        roomOptions.add({
+          'roomType': 'mixed',
+          'roomCount': familyRooms + singleRooms,
+          'totalPrice': totalMixPrice,
+          'pricePerNight': totalMixPrice,
+          'arrangement':
+              '$familyRooms family rooms + $singleRooms single rooms for $travelers travelers',
+          'costPerPerson': totalMixPrice / travelers,
+          'familyRooms': familyRooms,
+          'singleRooms': singleRooms,
+        });
+      }
+    }
+
+    if (roomOptions.isEmpty) {
+      print("❌ No suitable room combinations found for $travelers travelers");
+      return null;
+    }
+
+    // Sort by cost per person (cheapest first)
+    roomOptions.sort(
+      (a, b) => (a['costPerPerson'] as double).compareTo(
+        b['costPerPerson'] as double,
+      ),
+    );
+
+    final bestOption = roomOptions.first;
+    print(
+      "✅ Best option: ${bestOption['arrangement']} - Total: RM${bestOption['totalPrice']?.toStringAsFixed(2)}",
+    );
+
+    return bestOption;
+  }
+
+  // Updated accommodation budget calculation
+  double calculateTotalAccommodationCost({
+    required Map<String, dynamic> roomSelection,
+    required int nights,
+  }) {
+    final totalPricePerNight =
+        (roomSelection['totalPrice'] as num?)?.toDouble() ?? 0.0;
+    return totalPricePerNight * nights;
+  }
+
+  // Helper function to format room arrangement for display
+  String formatRoomArrangement(Map<String, dynamic> roomSelection) {
+    final arrangement = roomSelection['arrangement'] as String? ?? '';
+    final totalPrice = (roomSelection['totalPrice'] as num?)?.toDouble() ?? 0.0;
+    final roomCount = roomSelection['roomCount'] as int? ?? 1;
+
+    return '$arrangement\nTotal: RM${totalPrice.toStringAsFixed(2)}/night ($roomCount rooms)';
   }
 
   List<DateTime> _buildMealSlots(DateTime dayDate, int count) {
@@ -5782,10 +6177,35 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     _placeCache[key] = place; // ensure _placeCache is Map<String, Map>
   }
 
+  // Add this function to clear error/warning messages
+  void _clearErrorMessages() {
+    messages.removeWhere((message) {
+      // Remove error messages (red background)
+      if (message is Container) {
+        final decoration = message.decoration;
+        if (decoration is BoxDecoration) {
+          return decoration.color == Colors.redAccent ||
+              decoration.color == Colors.orange ||
+              decoration.color == Colors.red ||
+              decoration.color == Colors.orange[600];
+        }
+      }
+      // Remove simple text error messages
+      if (message is Text) {
+        final text = message.data ?? '';
+        return text.contains('AI: Error') ||
+            text.contains('AI: No') ||
+            text.contains('AI: Please') ||
+            text.contains('AI: Invalid');
+      }
+      return false;
+    });
+  }
+
   Future<void> _generateTripPlan(BuildContext context) async {
     debugPrint("🛠️DEBUG: 🚀 Entering _generateTripPlan function");
     debugPrint("🚀 Generating trip");
-
+    _clearErrorMessages();
     debugPrint(
       "🛠️DEBUG: Checking input conditions: selectedAreas=${selectedAreas.isEmpty}, startDate=$startDate, endDate=$endDate, budget=$budget",
     );
@@ -6109,33 +6529,232 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         "🛠️DEBUG: 🎯 Travelers: $numberOfTravelers → Using ${numberOfTravelers > 2 ? 'familyRoomCaps' : 'singleRoomCaps'}",
       );
 
-      double accommodationBudget;
-      debugPrint(
-        "🛠️DEBUG: Type of selectedHotelLevel: ${selectedHotelLevel.runtimeType}",
-      );
+      double requiredAccommodationBudget;
       if (useHotelLevel && selectedHotelLevel != null) {
-        if (selectedHotelLevel is! num) {
-          debugPrint(
-            "🛠️🚨DEBUG: selectedHotelLevel is not a num: ${selectedHotelLevel.runtimeType}",
-          );
+        // Use minimum price based on traveler count and selected level
+        if (numberOfTravelers > 2) {
+          requiredAccommodationBudget =
+              familyRoomCaps[selectedHotelLevel] ?? 400.0;
+        } else {
+          requiredAccommodationBudget =
+              singleRoomCaps[selectedHotelLevel] ?? 200.0;
+        }
+      } else {
+        // Use manual budget amount
+        requiredAccommodationBudget =
+            double.tryParse(_hotelManualAmountController.text) ?? 0.0;
+        if (requiredAccommodationBudget <= 0) {
+          debugPrint("❌ Invalid manual hotel budget");
           setState(() {
-            messages.add(const Text("AI: Invalid hotel level selected."));
+            messages.add(
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Icon(
+                        Icons.error_outline,
+                        color: Colors.white,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        "AI: Please enter a valid hotel budget amount.",
+                        style: GoogleFonts.poppins(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
           });
           return;
         }
-        accommodationBudget = roomCaps[selectedHotelLevel! as num] ?? 400.0;
-      } else {
-        accommodationBudget = (budget ?? 0) * (hotelPercent / 100);
       }
 
-      double budgetPerNight = accommodationBudget / nights;
+      // Calculate total nights
+      //num nights = endDate!.difference(startDate!).inDays;
+      if (nights <= 0) nights = 1;
+
+      // Calculate total accommodation cost
+      double totalAccommodationCost = requiredAccommodationBudget * nights;
+
+      // Validate against total budget
+      if (budget == null || budget! <= 0) {
+        debugPrint("❌ No budget set");
+        setState(() {
+          messages.add(
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.redAccent,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(
+                      Icons.error_outline,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      "AI: Please enter your total trip budget first.",
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        });
+        return;
+      }
+
+      // Check if accommodation cost exceeds total budget
+      if (totalAccommodationCost > budget!) {
+        debugPrint(
+          "❌ Accommodation cost (RM${totalAccommodationCost.toStringAsFixed(2)}) exceeds total budget (RM${budget!.toStringAsFixed(2)})",
+        );
+        setState(() {
+          messages.add(
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.redAccent,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(
+                      Icons.error_outline,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      "AI: Hotel cost (RM${totalAccommodationCost.toStringAsFixed(2)}) exceeds your total budget (RM${budget!.toStringAsFixed(2)}). Please increase your budget or choose a lower hotel level.",
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        });
+        return;
+      }
+
+      // Check if accommodation takes up too much of the budget (more than 70%)
+      double accommodationPercentage = (totalAccommodationCost / budget!) * 100;
+      if (accommodationPercentage > 70) {
+        debugPrint(
+          "⚠️ Accommodation cost (${accommodationPercentage.toStringAsFixed(1)}%) is very high compared to total budget",
+        );
+        setState(() {
+          messages.add(
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.orange,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(
+                      Icons.warning_amber_outlined,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      "AI: Warning - Hotel costs will use ${accommodationPercentage.toStringAsFixed(1)}% of your budget, leaving limited funds for activities and meals.",
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        });
+      }
+
+      // Calculate remaining budget for other expenses
+      double remainingBudget = budget! - totalAccommodationCost;
+      debugPrint("✅ Budget validation passed:");
+      debugPrint("   - Total budget: RM${budget!.toStringAsFixed(2)}");
       debugPrint(
-        "🛠️DEBUG: Accommodation budget: $accommodationBudget, Budget per night: $budgetPerNight",
+        "   - Accommodation cost: RM${totalAccommodationCost.toStringAsFixed(2)} (${accommodationPercentage.toStringAsFixed(1)}%)",
       );
+      debugPrint(
+        "   - Remaining for activities/meals: RM${remainingBudget.toStringAsFixed(2)}",
+      );
+
+      // Set the final accommodation budget for hotel filtering
+      double budgetPerNight = requiredAccommodationBudget;
+      debugPrint(
+        "✅ Using budget per night: RM${budgetPerNight.toStringAsFixed(2)}",
+      );
+
+      //double budgetPerNight = accommodationBudget / nights;
+      //debugPrint(
+      //  "🛠️DEBUG: Accommodation budget: $accommodationBudget, Budget per night: $budgetPerNight",
+      //);
 
       List<Map<String, dynamic>> suitableHotels = [];
       debugPrint(
-        "🛠️DEBUG: Starting hotel filtering for ${accommodations.length} accommodations",
+        "🏨 Starting hotel filtering for ${accommodations.length} accommodations",
       );
 
       for (var hotel in accommodations) {
@@ -6145,20 +6764,18 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
             (hotel['properties']['rating'] as num?)?.toDouble() ?? 0.0;
 
         debugPrint(
-          "🛠️DEBUG: Checking hotel: ${hotel['properties']['name']}, Rating: $hotelRating",
+          "🏨 Checking hotel: ${hotel['properties']['name']}, Rating: $hotelRating",
         );
 
         if (roomTypes == null || travelersNo == null) {
-          debugPrint(
-            "🛠️DEBUG: ⚠️ Skipping hotel due to null roomTypes or travelersNo",
-          );
+          debugPrint("⚠️ Skipping hotel due to null roomTypes or travelersNo");
           continue;
         }
 
         // Check if hotel rating matches selected level
         final ratingRange = ratingRanges[selectedHotelLevel];
         if (ratingRange == null) {
-          debugPrint("🛠️DEBUG: ❌ Invalid hotel level: $selectedHotelLevel");
+          debugPrint("❌ Invalid hotel level: $selectedHotelLevel");
           continue;
         }
 
@@ -6167,12 +6784,13 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
 
         if (hotelRating < minRating || hotelRating > maxRating) {
           debugPrint(
-            "🛠️DEBUG: ❌ Hotel rating $hotelRating not in range $minRating-$maxRating",
+            "❌ Hotel rating $hotelRating not in range $minRating-$maxRating",
           );
           continue;
         }
 
-        String? roomType = selectSuitableRoomType(
+        // Use enhanced room selection for multiple rooms
+        Map<String, dynamic>? roomSelection = selectSuitableRoomType(
           travelersNo: Map<String, dynamic>.from(travelersNo),
           roomTypes: Map<String, dynamic>.from(roomTypes),
           travelers: numberOfTravelers,
@@ -6180,20 +6798,24 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           selectedLevel: selectedHotelLevel,
         );
 
-        debugPrint("🛠️DEBUG: Selected room type: $roomType");
+        debugPrint("🏨 Room selection result: $roomSelection");
 
-        if (roomType != null) {
-          double price = roomTypes[roomType]['price']?.toDouble() ?? 0;
-          debugPrint(
-            "🛠️DEBUG: ✅ Hotel matches level $selectedHotelLevel criteria, adding to suitableHotels",
-          );
-
-          hotel['selectedRoomType'] = roomType;
-          hotel['roomPrice'] = price;
+        if (roomSelection != null) {
+          // Store the complete room selection data
+          hotel['roomSelection'] = roomSelection;
+          hotel['selectedRoomType'] = roomSelection['roomType'];
+          hotel['roomPrice'] = roomSelection['pricePerNight'];
+          hotel['totalRoomPrice'] = roomSelection['totalPrice'];
+          hotel['roomCount'] = roomSelection['roomCount'];
+          hotel['roomArrangement'] = roomSelection['arrangement'];
           hotel['hotelRating'] = hotelRating;
+
+          debugPrint(
+            "✅ Hotel suitable: ${hotel['properties']['name']} - ${roomSelection['arrangement']}",
+          );
           suitableHotels.add(hotel);
         } else {
-          debugPrint("🛠️DEBUG: ⚠️ No suitable room type found for hotel");
+          debugPrint("⚠️ No suitable room arrangement found for hotel");
         }
       }
 
@@ -6206,53 +6828,75 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         );
       }
 
-      if (suitableHotels.isEmpty) {
-        debugPrint(
-          "🛠️DEBUG: ❌ No suitable hotels found for level $selectedHotelLevel, returning early",
-        );
-        setState(() {
-          messages.add(
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.orange,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 8,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(Icons.hotel, color: Colors.white, size: 24),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      "AI: No hotels found matching the selected level or budget.",
-                      style: GoogleFonts.poppins(
+      if (suitableHotels.isNotEmpty) {
+        // Calculate total accommodation cost using the enhanced selection
+        final sampleHotel = suitableHotels.first;
+        final roomSelection =
+            sampleHotel['roomSelection'] as Map<String, dynamic>;
+        final pricePerNight =
+            (roomSelection['totalPrice'] as num?)?.toDouble() ?? 0.0;
+
+        int nights = endDate!.difference(startDate!).inDays;
+        if (nights <= 0) nights = 1;
+
+        double totalAccommodationCost = pricePerNight * nights;
+
+        // Validate against total budget
+        if (totalAccommodationCost > budget!) {
+          debugPrint(
+            "❌ Accommodation cost (RM${totalAccommodationCost.toStringAsFixed(2)}) exceeds total budget (RM${budget!.toStringAsFixed(2)})",
+          );
+          setState(() {
+            messages.add(
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Icon(
+                        Icons.error_outline,
                         color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
+                        size: 18,
                       ),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        "AI: Hotel cost (RM${totalAccommodationCost.toStringAsFixed(2)}) for ${roomSelection['arrangement']} exceeds your total budget (RM${budget!.toStringAsFixed(2)}). Please increase your budget or choose a lower hotel level.",
+                        style: GoogleFonts.poppins(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        });
+            );
+          });
+          return;
+        }
 
-        return;
+        debugPrint(
+          "✅ Budget validation passed for ${numberOfTravelers} travelers:",
+        );
+        debugPrint("   - Room arrangement: ${roomSelection['arrangement']}");
+        debugPrint(
+          "   - Price per night: RM${pricePerNight.toStringAsFixed(2)}",
+        );
+        debugPrint(
+          "   - Total accommodation cost: RM${totalAccommodationCost.toStringAsFixed(2)}",
+        );
       }
 
       debugPrint(
@@ -6263,14 +6907,36 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       double selectedHotelPrice;
       LatLng hotelLocation;
       String hotelName;
-
+      String? hotelOriginalArea;
       try {
         final random = Random();
-        selectedHotel = suitableHotels[random.nextInt(suitableHotels.length)];
+        final chosenHotel =
+            suitableHotels[random.nextInt(suitableHotels.length)];
+        final hotelOriginalArea = chosenHotel['properties']['area'];
+
+        // Debug: Check if the chosen hotel has roomPrice
+        print("🏨 [DEBUG] Chosen hotel from suitableHotels:");
+        print("   - Name: ${chosenHotel['properties']['name']}");
+        print("   - Has roomPrice: ${chosenHotel.containsKey('roomPrice')}");
+        print("   - roomPrice value: ${chosenHotel['roomPrice']}");
+        print("   - selectedRoomType: ${chosenHotel['selectedRoomType']}");
+
+        // Ensure the selected hotel has the same structure as alternate hotels
+        selectedHotel = Map<String, dynamic>.from(chosenHotel);
+
+        // Verify the roomPrice is preserved
+        print("🏨 [DEBUG] After copying to selectedHotel:");
+        print("   - selectedHotel roomPrice: ${selectedHotel!['roomPrice']}");
+
         referenceHotel ??= selectedHotel;
 
-        selectedRoomType = selectedHotel['selectedRoomType'] as String;
-        selectedHotelPrice = selectedHotel['roomPrice'] as double;
+        selectedRoomType = selectedHotel!['selectedRoomType'] as String;
+        selectedHotelPrice = selectedHotel!['roomPrice'] as double;
+
+        // Additional verification
+        print("🏨 [DEBUG] After assignment:");
+        print("   - selectedHotel roomPrice: ${selectedHotel!['roomPrice']}");
+        print("   - selectedHotelPrice variable: $selectedHotelPrice");
 
         if (selectedHotel['geometry'] == null ||
             selectedHotel['geometry']['coordinates'] == null ||
@@ -6315,8 +6981,32 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
             );
             double dist = _calculateDistance(hotelLocation, loc);
             if (dist <= 2.0) {
-              hotel['distanceFromSelected'] = dist;
-              alternateHotels.add(hotel);
+              // Make sure to include ALL the original Firebase data
+              final enrichedHotel = Map<String, dynamic>.from(hotel);
+
+              // Ensure properties contains all Firebase fields
+              final originalProps = hotel['properties'] as Map<String, dynamic>;
+              enrichedHotel['properties'] = Map<String, dynamic>.from(
+                originalProps,
+              );
+
+              // Debug: Verify what data we have
+              debugPrint(
+                "Building alternate hotel: ${enrichedHotel['properties']['name']}",
+              );
+              debugPrint(
+                "  - Has roomTypes: ${enrichedHotel['properties']['roomTypes'] != null}",
+              );
+              debugPrint(
+                "  - Has travelersNo: ${enrichedHotel['properties']['travelersNo'] != null}",
+              );
+              debugPrint("  - roomPrice: ${enrichedHotel['roomPrice']}");
+              debugPrint(
+                "  - selectedRoomType: ${enrichedHotel['selectedRoomType']}",
+              );
+
+              enrichedHotel['distanceFromSelected'] = dist;
+              alternateHotels.add(enrichedHotel);
             }
           } catch (e) {
             debugPrint(
@@ -6333,6 +7023,8 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           this.selectedRoomType = selectedRoomType;
           this.suitableHotels = suitableHotels;
           this.alternateHotels = alternateHotels;
+
+          _debugRoomTypesFlow();
         });
       } catch (e) {
         debugPrint("🛠️🚨DEBUG: Error in hotel selection: $e");
@@ -6426,6 +7118,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         List<LatLng> tempCoords = [];
 
         final hotelKey = _keyForPlace(selectedHotel);
+
         _cachePlace(selectedHotel);
 
         // Start with hotel
@@ -6451,7 +7144,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
             'price_level': selectedHotel['properties']['price_level'] ?? 3,
             'selectedRoomType': selectedRoomType,
           },
-          'area': selectedAreas.first,
+          'area': hotelOriginalArea ?? selectedAreas.first,
           'dayIndex': day + 1,
           'sequence': 0,
         });
@@ -6786,6 +7479,248 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     return matchRatio >= 0.6; // e.g., 60% matching words
   }
 
+  /// Normalize any hotel-shaped map into a consistent object with id/placeId + coords
+  Map<String, dynamic> _normalizeHotelForIdentity(Map<String, dynamic> h) {
+    final propsIn = (h['properties'] as Map?) ?? const {};
+    final placeId =
+        propsIn['placeId'] ?? propsIn['place_id'] ?? h['id'] ?? propsIn['id'];
+
+    // coords
+    final coordsArr = (h['geometry']?['coordinates'] as List?) ?? const [];
+    final double? lon =
+        coordsArr.isNotEmpty
+            ? (coordsArr[0] as num?)?.toDouble()
+            : (h['lng'] as num?)?.toDouble();
+    final double? lat =
+        coordsArr.length > 1
+            ? (coordsArr[1] as num?)?.toDouble()
+            : (h['lat'] as num?)?.toDouble();
+
+    // identity props
+    final propsOut = <String, dynamic>{
+      'name': propsIn['name'] ?? h['name'] ?? 'Selected accommodation',
+      'address': propsIn['address'] ?? h['address'] ?? '',
+      'phone': propsIn['phone'] ?? '',
+      'placeId': placeId,
+      'emptyRoomsByDate': propsIn['emptyRoomsByDate'] ?? {},
+    };
+
+    // 🔗 carry pricing-relevant fields forward if available
+    if (propsIn['roomTypes'] is Map)
+      propsOut['roomTypes'] = Map<String, dynamic>.from(propsIn['roomTypes']);
+    if (propsIn['travelersNo'] is Map)
+      propsOut['travelersNo'] = Map<String, dynamic>.from(
+        propsIn['travelersNo'],
+      );
+    if (propsIn['rating'] != null)
+      propsOut['rating'] = (propsIn['rating'] as num?)?.toDouble();
+    if (propsIn['currency'] != null) propsOut['currency'] = propsIn['currency'];
+
+    final out = <String, dynamic>{
+      'id': placeId,
+      'properties': propsOut,
+      'geometry': {
+        'coordinates': [lon ?? 0.0, lat ?? 0.0],
+      },
+    };
+
+    // surface selected type & price at root if you store them there
+    if (h['selectedRoomType'] != null)
+      out['selectedRoomType'] = h['selectedRoomType'];
+    if (h['roomPrice'] != null) {
+      final v = h['roomPrice'];
+      out['roomPrice'] =
+          v is num ? v.toDouble() : double.tryParse(v.toString());
+    }
+
+    return out;
+  }
+
+  /// Apply the *current* selectedHotel to all hotel rows (sequence==0 or category accommodation) in tripPicks
+  void _syncSelectedHotelIntoTripPicks() {
+    if (selectedHotel == null) return;
+
+    final normalized = _normalizeHotelForIdentity(selectedHotel!);
+    final props = (normalized['properties'] as Map);
+    final coords = (normalized['geometry'] as Map)['coordinates'] as List;
+
+    for (int i = 0; i < tripPicks.length; i++) {
+      final p = tripPicks[i] as Map<String, dynamic>;
+      final pd = (p['placeData'] as Map?) ?? {};
+      final cat =
+          (pd['category'] ?? p['category'] ?? '').toString().toLowerCase();
+      final seq = (p['sequence'] ?? -1) as int;
+      final isHotel =
+          cat.contains('hotel') ||
+          cat.contains('accommodation') ||
+          cat.contains('lodging') ||
+          seq == 0;
+      if (!isHotel) continue;
+
+      // Overwrite the hotel row with normalized identity + keep existing meta (area/day/seq)
+      pd['name'] = props['name'];
+      pd['address'] = props['address'];
+      pd['place_id'] = props['placeId'];
+      pd['coordinates'] = {
+        'lat': (coords.length > 1 ? (coords[1] as num).toDouble() : 0.0),
+        'lon': (coords.isNotEmpty ? (coords[0] as num).toDouble() : 0.0),
+      };
+      // optional: keep amenities/price/photo if already present; we only force identity/coords
+      p['placeData'] = pd;
+
+      // also surface the id on the pick if you use p['placeId']
+      p['placeId'] = props['placeId'];
+
+      print(
+        "🔄 [SyncHotel] day=${p['dayIndex']} seq=${p['sequence']} "
+        "name=${pd['name']} place_id=${pd['place_id']} coords=${pd['coordinates']}",
+      );
+    }
+  }
+
+  /// Call this whenever user selects an alternate hotel
+  void setSelectedHotel(Map<String, dynamic> newHotel) {
+    selectedHotel = newHotel;
+    print(
+      "✅ [SelectHotel] name=${newHotel['properties']?['name'] ?? newHotel['name']} "
+      "placeId=${newHotel['properties']?['placeId'] ?? newHotel['placeId'] ?? newHotel['place_id']}",
+    );
+    _syncSelectedHotelIntoTripPicks();
+    setState(() {}); // trigger UI/map refresh
+  }
+
+  double _haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+    const R = 6371000.0; // meters
+    final dLat = (lat2 - lat1) * math.pi / 180.0;
+    final dLon = (lon2 - lon1) * math.pi / 180.0;
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180.0) *
+            math.cos(lat2 * math.pi / 180.0) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return R * c;
+  }
+
+  // // Create a stable fallback id if Firestore cannot be matched
+  // String _syntheticHotelId(String name, double lat, double lon) {
+  //   String slug = name
+  //       .toLowerCase()
+  //       .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+  //       .replaceAll(RegExp(r'-+'), '-')
+  //       .replaceAll(RegExp(r'^-|-$'), '');
+  //   return 'manual_${slug}_${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
+  // }
+
+  Future<bool> _hydrateSelectedHotelIdentity({
+    double maxMatchMeters = 250,
+  }) async {
+    if (selectedHotel == null) return false;
+
+    final props = (selectedHotel!['properties'] as Map?) ?? {};
+    final name = props['name'] ?? selectedHotel!['name'];
+    final geom = (selectedHotel!['geometry'] as Map?) ?? {};
+    final coords = (geom['coordinates'] as List?) ?? const [];
+    final lon = (coords.isNotEmpty ? coords[0] : selectedHotel!['lon']) as num?;
+    final lat = (coords.length > 1 ? coords[1] : selectedHotel!['lat']) as num?;
+
+    if (name == null || lat == null || lon == null) return false;
+
+    String? matchedDocId;
+    double bestDistance = double.infinity;
+
+    try {
+      // Try searching in ALL selected areas, not just the first one
+      for (String area in selectedAreas) {
+        print("🔍 [HydrateHotel] Searching in area: $area for hotel: $name");
+
+        QuerySnapshot<Map<String, dynamic>> q =
+            await FirebaseFirestore.instance
+                .collection('areas')
+                .doc(area)
+                .collection('places')
+                .where(
+                  'category',
+                  isEqualTo: 'accommodation',
+                ) // Filter by category first
+                .get();
+
+        for (final doc in q.docs) {
+          final data = doc.data();
+          final docName = data['name'] as String?;
+
+          // Check name match (exact or partial)
+          if (docName != null &&
+              (docName == name ||
+                  docName.contains(name) ||
+                  name.contains(docName))) {
+            final coords = data['coordinates'] as Map?;
+            final docLat = coords?['latitude'] ?? coords?['lat'];
+            final docLon = coords?['longitude'] ?? coords?['lon'];
+
+            if (docLat != null && docLon != null) {
+              final distance = _haversineMeters(
+                lat.toDouble(),
+                lon.toDouble(),
+                docLat.toDouble(),
+                docLon.toDouble(),
+              );
+
+              print(
+                "🔍 Found potential match: $docName, distance: ${distance.toStringAsFixed(0)}m",
+              );
+
+              if (distance < bestDistance && distance <= maxMatchMeters) {
+                bestDistance = distance;
+                matchedDocId = doc.id;
+                print(
+                  "✅ New best match: $docName (${distance.toStringAsFixed(0)}m)",
+                );
+              }
+            }
+          }
+        }
+      }
+
+      if (matchedDocId != null) {
+        selectedHotel!['id'] = matchedDocId;
+        (selectedHotel!['properties'] as Map?)?['placeId'] = matchedDocId;
+        selectedHotel!['placeId'] = matchedDocId;
+        print(
+          "✅ [HydrateHotel] Matched '$name' to docId=$matchedDocId (~${bestDistance.toStringAsFixed(0)}m)",
+        );
+
+        _syncSelectedHotelIntoTripPicks();
+        return true;
+      } else {
+        // Create a synthetic ID as fallback
+        final syntheticId =
+            'hotel_${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '_')}_${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
+        selectedHotel!['id'] = syntheticId;
+        (selectedHotel!['properties'] as Map?)?['placeId'] = syntheticId;
+        selectedHotel!['placeId'] = syntheticId;
+        print(
+          "⚠️ [HydrateHotel] No Firebase match found, using synthetic ID: $syntheticId",
+        );
+
+        _syncSelectedHotelIntoTripPicks();
+        return true;
+      }
+    } catch (e) {
+      print("🚨 [HydrateHotel] Error during hydration: $e");
+      // Even on error, create a synthetic ID so booking can proceed
+      final syntheticId =
+          'hotel_error_${DateTime.now().millisecondsSinceEpoch}';
+      selectedHotel!['id'] = syntheticId;
+      (selectedHotel!['properties'] as Map?)?['placeId'] = syntheticId;
+      selectedHotel!['placeId'] = syntheticId;
+
+      _syncSelectedHotelIntoTripPicks();
+      return true;
+    }
+  }
+
   Future<void> _showBookingPrompt() async {
     try {
       if (tripPicks.isEmpty ||
@@ -6842,10 +7777,8 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         }
         return;
       }
-
-      // Only show booking prompt if hotel is selected
       if (selectedHotel != null) {
-        // Prep values for the prompt
+        // Prep values
         final userId = widget.userId;
         final start = startDate!;
         final end = endDate!;
@@ -6854,11 +7787,11 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
             (selectedAreas.isNotEmpty) ? selectedAreas.first : 'Penang';
 
         double? pricePerNight;
-        if (selectedHotel != null && selectedHotel!['roomPrice'] != null) {
+        if (selectedHotel!['roomPrice'] != null) {
           pricePerNight = (selectedHotel!['roomPrice'] as num?)?.toDouble();
         }
 
-        // Build areaDays for trip creation later
+        // Build areaDays
         final Map<String, int> areaDays = {};
         userAreaPicks[userId]?.forEach((area, days) {
           if (selectedAreas.contains(area) && days > 0) {
@@ -6866,43 +7799,24 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           }
         });
 
-        // Normalize hotel for booking prompt
-        final coords =
-            (selectedHotel!['geometry']?['coordinates'] as List?) ??
-            [null, null];
-        final normalizedHotel = <String, dynamic>{
-          'id':
-              selectedHotel!['id'] ??
-              selectedHotel!['placeId'] ??
-              selectedHotel!['properties']?['id'],
-          'properties': {
-            'name':
-                selectedHotel!['properties']?['name'] ??
-                selectedHotel!['name'] ??
-                'Selected accommodation',
-            'address':
-                selectedHotel!['properties']?['address'] ??
-                selectedHotel!['address'] ??
-                '',
-            'phone':
-                selectedHotel!['properties']?['phone'] ??
-                selectedHotel!['phone'] ??
-                '',
-            // IMPORTANT: Include the availability data
-            'emptyRoomsByDate':
-                selectedHotel!['emptyRoomsByDate'] ??
-                selectedHotel!['properties']?['emptyRoomsByDate'] ??
-                {},
-          },
-          'geometry': {
-            'coordinates': [
-              (coords.isNotEmpty ? coords[0] : selectedHotel!['lng']) ?? 0.0,
-              (coords.length > 1 ? coords[1] : selectedHotel!['lat']) ?? 0.0,
-            ],
-          },
-        };
+        // 🔸 NEW: Hydrate ID before anything else
+        final hydrated = await _hydrateSelectedHotelIdentity();
+        if (!hydrated) {
+          print(
+            "🚫 [Booking] Could not hydrate hotel identity; ask user to reselect.",
+          );
+          return;
+        }
 
-        // Create trip payload with all data needed for saving later
+        // Ensure picks carry latest hotel identity
+        _syncSelectedHotelIntoTripPicks();
+
+        // Build hotel for booking from the (synced) selectedHotel
+        final normalizedHotel = _normalizeHotelForIdentity(selectedHotel!);
+        normalizedHotel['id'] ??=
+            (normalizedHotel['properties'] as Map?)?['placeId'];
+
+        // Create trip payload
         final tripPayload = <String, dynamic>{
           'userId': userId,
           'city': city,
@@ -6910,8 +7824,6 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           'checkIn': _fmtYmd(start),
           'checkOut': _fmtYmd(end),
           'pricePerNight': pricePerNight,
-
-          // Additional data needed for trip creation
           'title': (tripTitle.isNotEmpty ? tripTitle : 'Trip to Penang'),
           'startDate': start,
           'endDate': end,
@@ -6922,16 +7834,67 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           'dailyWeather': dailyWeather,
         };
 
-        // Show booking prompt with callback
+        // DEBUG: booking hotel
+        final nhProps = (normalizedHotel['properties'] as Map?) ?? {};
+        final nhGeom = (normalizedHotel['geometry'] as Map?) ?? {};
+        print(
+          "📘 [Booking] normalizedHotel.id=${normalizedHotel['id']} "
+          "props.placeId=${nhProps['placeId']} "
+          "name=${nhProps['name']} coords=${nhGeom['coordinates']}",
+        );
+
+        // DEBUG: compare with first itinerary hotel in picks
+        final List<Map<String, dynamic>> picks =
+            (tripPicks as List?)?.cast<Map<String, dynamic>>() ?? const [];
+        final Map<String, dynamic> firstItinHotel = picks.firstWhere((p) {
+          final pd = (p['placeData'] as Map?) ?? const {};
+          final cat =
+              (pd['category'] ?? p['category'] ?? '').toString().toLowerCase();
+          final seq = (p['sequence'] ?? -1) as int;
+          return cat.contains('hotel') ||
+              cat.contains('accommodation') ||
+              cat.contains('lodging') ||
+              seq == 0;
+        }, orElse: () => const <String, dynamic>{});
+
+        print(
+          "📘 [Booking] using normalizedHotel "
+          "id=${normalizedHotel['id']} placeId=${(normalizedHotel['properties'] as Map)['placeId']} "
+          "name=${(normalizedHotel['properties'] as Map)['name']} "
+          "coords=${(normalizedHotel['geometry'] as Map)['coordinates']}",
+        );
+
+        if (firstItinHotel.isEmpty) {
+          print("📗 [Compare] No itinerary hotel found in picks.");
+        } else {
+          final fpd = (firstItinHotel['placeData'] as Map?) ?? const {};
+          print(
+            "📗 [Compare] itinerary hotel from picks "
+            "name=${fpd['name'] ?? firstItinHotel['placeName']} "
+            "place_id=${fpd['place_id'] ?? firstItinHotel['place_id']} "
+            "coords=${fpd['coordinates'] ?? firstItinHotel['coordinates']}",
+          );
+        }
+
+        final hasAnyId =
+            (normalizedHotel['id'] != null) ||
+            (((normalizedHotel['properties'] as Map?)?['placeId']) != null);
+        if (!hasAnyId) {
+          print(
+            "🚫 [Booking] Missing hotel id/placeId after hydration — stopping.",
+          );
+          return;
+        }
+
+        // Show booking prompt
         await showBookingPromptBottomSheet(
           context: context,
           trip: tripPayload,
           hotel: normalizeHotelFromAny(normalizedHotel),
           isSandbox: true,
-          saveTripCallback: _saveTripToFirebase, // Pass the save function
+          saveTripCallback: _saveTripToFirebase,
         );
       } else {
-        // No hotel selected, save trip directly
         await _saveTripToFirebase();
         print("ℹ️ No selectedHotel — saved trip without booking prompt.");
       }
@@ -6947,29 +7910,157 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     }
   }
 
+  // Add this debug function to trace exactly where roomTypes is getting lost
+  void _debugRoomTypesFlow() {
+    print("🔍 DEBUGGING roomTypes flow...");
+
+    if (selectedHotel != null) {
+      print("📊 selectedHotel data structure:");
+      print("   - selectedHotel keys: ${selectedHotel!.keys.toList()}");
+      print(
+        "   - properties keys: ${(selectedHotel!['properties'] as Map?)?.keys.toList()}",
+      );
+      print(
+        "   - roomTypes value: ${selectedHotel!['properties']?['roomTypes']}",
+      );
+      print(
+        "   - roomTypes type: ${selectedHotel!['properties']?['roomTypes'].runtimeType}",
+      );
+      print(
+        "   - travelersNo value: ${selectedHotel!['properties']?['travelersNo']}",
+      );
+      print("   - roomPrice: ${selectedHotel!['roomPrice']}");
+      print("   - selectedRoomType: ${selectedHotel!['selectedRoomType']}");
+
+      // Check if roomTypes is actually there but in a different format
+      final props = selectedHotel!['properties'] as Map?;
+      if (props != null) {
+        props.forEach((key, value) {
+          if (key.toString().toLowerCase().contains('room')) {
+            print(
+              "   - Found room-related field: $key = $value (${value.runtimeType})",
+            );
+          }
+        });
+      }
+    }
+  }
+
+  // Also add this to your hotel selection process to trace when it gets set
+  Map<String, dynamic>? selectSuitableRoomTypeWithDebug({
+    required Map<String, dynamic> travelersNo,
+    required Map<String, dynamic> roomTypes,
+    required int travelers,
+    required double hotelRating,
+    required int selectedLevel,
+  }) {
+    print("🏨 selectSuitableRoomType DEBUG:");
+    print("   - travelersNo: $travelersNo (${travelersNo.runtimeType})");
+    print("   - roomTypes: $roomTypes (${roomTypes.runtimeType})");
+    print("   - travelers: $travelers");
+    print("   - hotelRating: $hotelRating");
+    print("   - selectedLevel: $selectedLevel");
+
+    // Check if roomTypes has the expected structure
+    if (roomTypes.containsKey('single')) {
+      print("   - ✅ Has 'single' key: ${roomTypes['single']}");
+    } else {
+      print("   - ❌ Missing 'single' key");
+    }
+
+    if (roomTypes.containsKey('family')) {
+      print("   - ✅ Has 'family' key: ${roomTypes['family']}");
+    } else {
+      print("   - ❌ Missing 'family' key");
+    }
+
+    // Continue with original logic...
+    final ratingRange = ratingRanges[selectedLevel];
+    if (ratingRange == null) {
+      print("❌ Invalid hotel level: $selectedLevel");
+      return null;
+    }
+
+    final minRating = ratingRange['min']!;
+    final maxRating = ratingRange['max']!;
+
+    if (hotelRating < minRating || hotelRating > maxRating) {
+      print(
+        "❌ Hotel rating $hotelRating not in range $minRating-$maxRating for level $selectedLevel",
+      );
+      return null;
+    }
+
+    // Rest of your selectSuitableRoomType logic here...
+    // [Include the enhanced room selection logic from the previous artifact]
+
+    return null; // Replace with actual return from your logic
+  }
+
+  // Update your hotel filtering to use debug version
+  Future<void> _debugHotelFiltering() async {
+    print("🏨 DEBUG: Starting hotel filtering with debug info...");
+
+    final curatedPlaces = await _loadPlacesFromFirebase(selectedAreas);
+
+    var accommodations =
+        curatedPlaces
+            .where(
+              (p) =>
+                  (p['properties']['category']?.toLowerCase() ==
+                      'accommodation'),
+            )
+            .toList();
+
+    print("🏨 Found ${accommodations.length} total accommodations");
+
+    for (int i = 0; i < accommodations.length && i < 3; i++) {
+      // Check first 3
+      final hotel = accommodations[i];
+      final props = hotel['properties'] as Map;
+
+      print("🏨 DEBUG Hotel #${i + 1}: ${props['name']}");
+      print("   - All properties keys: ${props.keys.toList()}");
+      print(
+        "   - roomTypes: ${props['roomTypes']} (${props['roomTypes'].runtimeType})",
+      );
+      print(
+        "   - travelersNo: ${props['travelersNo']} (${props['travelersNo'].runtimeType})",
+      );
+
+      if (props['roomTypes'] != null) {
+        final roomTypes = props['roomTypes'] as Map;
+        print("   - roomTypes keys: ${roomTypes.keys.toList()}");
+        roomTypes.forEach((key, value) {
+          print("   - roomTypes[$key]: $value (${value.runtimeType})");
+        });
+      }
+    }
+  }
+
   Future<String> _saveTripToFirebase([Map<String, dynamic>? tripData]) async {
     print(
       "🟦 _saveTripToFirebase called with keys: ${tripData?.keys.toList()}",
     );
 
-    final userId = tripData?['userId'] ?? widget.userId;
-    final start = (tripData?['startDate'] as DateTime?) ?? startDate!;
-    final end = (tripData?['endDate'] as DateTime?) ?? endDate!;
-    print(
-      "🟦 _saveTripToFirebase inputs → userId=$userId start=$start end=$end",
-    );
+    // Debug: Check what pricing data we have initially
+    print("🏨 [DEBUG] Initial pricing check:");
+    print("   - tripData pricePerNight: ${tripData?['pricePerNight']}");
+    print("   - selectedHotel exists: ${selectedHotel != null}");
+    if (selectedHotel != null) {
+      print("   - selectedHotel roomPrice: ${selectedHotel!['roomPrice']}");
+      print(
+        "   - selectedHotel name: ${selectedHotel!['properties']?['name']}",
+      );
+    }
 
-    // --- Create trip doc ---
-    final tripRef = FirebaseFirestore.instance.collection('trips').doc();
-    final tripId = tripRef.id;
-    print("🟦 New tripRef.id = $tripId");
     try {
       // Use passed data or fall back to current state
       final userId = tripData?['userId'] ?? widget.userId;
       final start = (tripData?['startDate'] as DateTime?) ?? startDate!;
       final end = (tripData?['endDate'] as DateTime?) ?? endDate!;
       final travelers = tripData?['numberOfTravelers'] ?? numberOfTravelers;
-      final title = tripData?['title'] ?? tripTitle; // was 'Trip to Penang'
+      final title = tripData?['title'] ?? tripTitle;
 
       final city =
           tripData?['city'] ??
@@ -6980,18 +8071,52 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       final picks = (tripData?['tripPicks'] as List?) ?? tripPicks;
       final weather = (tripData?['dailyWeather'] as List?) ?? dailyWeather;
 
-      // Calculate accommodation expense
+      print("🟦 Processing ${picks.length} trip picks for saving");
+
+      // Calculate accommodation expense with debug logging
       double accommodationExpense = 0.0;
       double? pricePerNight = tripData?['pricePerNight'] as double?;
+
+      print("💰 [DEBUG] Accommodation expense calculation:");
+      print("   - Initial pricePerNight from tripData: $pricePerNight");
+
+      // If no pricePerNight in tripData, try to get it from selectedHotel
+      if (pricePerNight == null && selectedHotel != null) {
+        print("   - No pricePerNight in tripData, checking selectedHotel...");
+        final rawRoomPrice = selectedHotel!['roomPrice'];
+        print(
+          "   - selectedHotel['roomPrice'] raw value: $rawRoomPrice (type: ${rawRoomPrice.runtimeType})",
+        );
+
+        pricePerNight = (rawRoomPrice as num?)?.toDouble();
+        print(
+          "   - Extracted pricePerNight from selectedHotel: $pricePerNight",
+        );
+      } else if (pricePerNight == null) {
+        print("   - No pricePerNight available from either source");
+      } else {
+        print("   - Using pricePerNight from tripData: $pricePerNight");
+      }
+
       if (pricePerNight != null) {
         int nights = end.difference(start).inDays;
         if (nights <= 0) nights = 1;
         accommodationExpense = pricePerNight * nights;
+
+        print("   - Nights calculated: $nights");
+        print(
+          "   - Final accommodationExpense: $accommodationExpense (${pricePerNight} × $nights)",
+        );
+      } else {
+        print(
+          "   - No valid pricePerNight found, accommodationExpense remains 0",
+        );
       }
 
-      // --- Create trip doc ---
+      // Create trip document
       final tripRef = FirebaseFirestore.instance.collection('trips').doc();
       final tripId = tripRef.id;
+      print("🟦 New tripRef.id = $tripId");
 
       await tripRef.set({
         'ownerId': userId,
@@ -7022,7 +8147,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
 
       print("✅ Trip document created successfully.");
 
-      // --- Batch itinerary + weather ---
+      // Start batch for itinerary and weather
       final batch = FirebaseFirestore.instance.batch();
 
       // Sort picks: dayIndex then sequence
@@ -7036,73 +8161,162 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         return seqA.compareTo(seqB);
       });
 
-      for (var pick in sortedPicks) {
+      // Process each pick and create itinerary documents
+      for (int i = 0; i < sortedPicks.length; i++) {
+        final pick = sortedPicks[i];
         final placeData = pick['placeData'] as Map<String, dynamic>;
         var area = pick['area'] as String;
         final dayIndex = pick['dayIndex'] as int;
-        final placeName = placeData['name'];
+        final sequence = pick['sequence'] as int;
+        final placeName = placeData['name'] as String;
 
-        print("Processing place: $placeName, area: $area");
+        print(
+          "🟩 [Itinerary Loop $i] Processing place: '$placeName' "
+          "(day=$dayIndex, area=$area, seq=$sequence)",
+        );
 
-        // Your existing place matching logic
-        final placeQuery =
-            await FirebaseFirestore.instance
-                .collection('areas')
-                .doc(area)
-                .collection('places')
-                .where('name', isEqualTo: placeName)
-                .limit(1)
-                .get();
+        // Extract coordinates
+        final coordinates = placeData['coordinates'] as Map<String, dynamic>?;
+        final lat = coordinates?['lat'] ?? 0.0;
+        final lon = coordinates?['lon'] ?? 0.0;
 
-        DocumentSnapshot<Map<String, dynamic>>? matchedDoc;
-        if (placeQuery.docs.isEmpty) {
-          // Your existing fuzzy matching logic...
-          final allPlacesQuery =
+        // Determine if this is a hotel
+        final cat = (placeData['category'] ?? '').toString().toLowerCase();
+        final isHotel =
+            cat.contains('hotel') ||
+            cat.contains('accommodation') ||
+            cat.contains('lodging') ||
+            sequence == 0; // First item of each day is typically hotel
+
+        if (isHotel) {
+          print("🏨 [Itinerary Loop $i] HOTEL detected → name='$placeName'");
+        }
+
+        // Try to find matching place in Firebase for additional details
+        String? placeId;
+        Map<String, dynamic>? additionalPlaceData;
+
+        try {
+          // First try exact name match
+          var placeQuery =
               await FirebaseFirestore.instance
                   .collection('areas')
                   .doc(area)
                   .collection('places')
+                  .where('name', isEqualTo: placeName)
+                  .limit(1)
                   .get();
 
-          for (final doc in allPlacesQuery.docs) {
-            final firestoreName = (doc.data()['name'] ?? '').toString();
-            if (isFuzzyMatch(firestoreName, placeName)) {
-              matchedDoc = doc;
-              break;
+          if (placeQuery.docs.isNotEmpty) {
+            placeId = placeQuery.docs.first.id;
+            additionalPlaceData = placeQuery.docs.first.data();
+            print(
+              "🟩 [Itinerary Loop $i] Found exact match for '$placeName' with ID: $placeId",
+            );
+          } else {
+            // Try fuzzy name matching for restaurants/meals
+            if (placeName.startsWith('Meal: ')) {
+              final cleanName = placeName.substring(6).trim();
+              placeQuery =
+                  await FirebaseFirestore.instance
+                      .collection('areas')
+                      .doc(area)
+                      .collection('places')
+                      .where('name', isEqualTo: cleanName)
+                      .limit(1)
+                      .get();
+
+              if (placeQuery.docs.isNotEmpty) {
+                placeId = placeQuery.docs.first.id;
+                additionalPlaceData = placeQuery.docs.first.data();
+                print(
+                  "🟩 [Itinerary Loop $i] Found meal match for '$cleanName' with ID: $placeId",
+                );
+              }
+            }
+            // Try fuzzy matching for souvenirs
+            else if (placeName.startsWith('Souvenir: ')) {
+              final cleanName = placeName.substring(10).trim();
+              placeQuery =
+                  await FirebaseFirestore.instance
+                      .collection('areas')
+                      .doc(area)
+                      .collection('places')
+                      .where('name', isEqualTo: cleanName)
+                      .limit(1)
+                      .get();
+
+              if (placeQuery.docs.isNotEmpty) {
+                placeId = placeQuery.docs.first.id;
+                additionalPlaceData = placeQuery.docs.first.data();
+                print(
+                  "🟩 [Itinerary Loop $i] Found souvenir match for '$cleanName' with ID: $placeId",
+                );
+              }
             }
           }
 
-          if (matchedDoc == null) {
-            await FirebaseFirestore.instance.collection('unmatched_places').add(
-              {
-                'name': placeName,
-                'intendedArea': area,
-                'timestamp': Timestamp.now(),
-              },
+          // If still no match, use generated ID
+          if (placeId == null) {
+            placeId =
+                placeData['place_id'] as String? ??
+                'generated_${DateTime.now().millisecondsSinceEpoch}_$i';
+            print(
+              "⚠️ [Itinerary Loop $i] No Firebase match found for '$placeName', using generated ID: $placeId",
             );
-            continue;
           }
-        } else {
-          matchedDoc = placeQuery.docs.first;
+        } catch (e) {
+          print(
+            "⚠️ [Itinerary Loop $i] Error searching for place '$placeName': $e",
+          );
+          placeId =
+              placeData['place_id'] as String? ??
+              'generated_${DateTime.now().millisecondsSinceEpoch}_$i';
         }
 
-        final placeId = matchedDoc.id;
-        final isOutdoor =
-            (placeData['type']?.toString().toLowerCase() == 'outdoor');
+        // Create the itinerary document
+        final itineraryRef = tripRef.collection('itinerary').doc();
 
-        final itemRef = tripRef.collection('itinerary').doc();
-        batch.set(itemRef, {
+        // Merge data from Firebase if available
+        final mergedPlaceData = Map<String, dynamic>.from(placeData);
+        if (additionalPlaceData != null) {
+          // Add additional data from Firebase, but don't overwrite existing data
+          additionalPlaceData.forEach((key, value) {
+            if (!mergedPlaceData.containsKey(key)) {
+              mergedPlaceData[key] = value;
+            }
+          });
+        }
+
+        // Create the itinerary document data
+        final itineraryData = {
+          'area': area,
           'placeId': placeId,
           'placeName': placeName,
-          'tripId': tripId,
-          'area': area,
-          'isOutdoor': isOutdoor,
+          'dayIndex': dayIndex,
+          'sequence': sequence,
+          'coordinates': {'lat': lat, 'lon': lon},
+          'placeData': mergedPlaceData,
+          'category': cat.isNotEmpty ? cat : 'attraction',
+          'isHotel': isHotel,
+          'createdAt': Timestamp.now(),
           'date': Timestamp.fromDate(start.add(Duration(days: dayIndex - 1))),
-          'sequence': pick['sequence'] ?? 0,
-        });
+        };
+        print(
+          "📗 [Itinerary] About to save place: "
+          "name=${placeName}, id=${placeId}, "
+          "category=${cat}, mergedData=${mergedPlaceData}",
+        );
+
+        // Add to batch
+        batch.set(itineraryRef, itineraryData);
+
+        print(
+          "🟩 [Itinerary Loop $i] Added itinerary doc for '$placeName' to batch",
+        );
       }
 
-      // Save weather
+      // Save weather data
       final days = end.difference(start).inDays + 1;
       for (int i = 0; i < days && i < weather.length; i++) {
         final weatherRef = tripRef.collection('weather').doc();
@@ -7112,11 +8326,16 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
               .toIso8601String()
               .substring(0, 10),
           'condition': weather[i],
+          'dayIndex': i + 1,
+          'createdAt': Timestamp.now(),
         });
       }
 
+      // Commit the batch
       await batch.commit();
-      print("✅ Subcollections saved successfully.");
+      print(
+        "✅ Batch committed successfully - ${sortedPicks.length} itinerary items and ${weather.length} weather records saved",
+      );
 
       if (mounted) {
         setState(() {
@@ -7168,6 +8387,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
             ),
           );
         });
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
@@ -7274,23 +8494,6 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         numberOfTravelers > 0;
   }
 
-  /// Calculates the Jaccard similarity between two sets of areas (places visited)
-  double _calculateAreaSimilarity(
-    Map<String, int> currentUserAreaDays,
-    Map<String, int> otherUserAreaDays,
-  ) {
-    // Convert the keys to sets (areas visited by both users)
-    Set<String> currentUserAreas = currentUserAreaDays.keys.toSet();
-    Set<String> otherUserAreas = otherUserAreaDays.keys.toSet();
-
-    // Calculate intersection and union of areas
-    Set<String> intersection = currentUserAreas.intersection(otherUserAreas);
-    Set<String> union = currentUserAreas.union(otherUserAreas);
-
-    // Jaccard similarity formula: intersection size / union size
-    return intersection.length / union.length;
-  }
-
   double _travellerWeight(int mine, int theirs) {
     final diff = (mine - theirs).abs();
     if (diff == 0) return 1.00;
@@ -7356,41 +8559,10 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     }
   }
 
-  bool _isOutlierMAD(
-    double value,
-    List<double> allValues, {
-    double threshold = 3.5,
-  }) {
-    if (allValues.length <= 2) return false;
-
-    List<double> sorted = [...allValues]..sort();
-    double median(List<double> xs) {
-      if (xs.isEmpty) return 0;
-      final n = xs.length;
-      final mid = n ~/ 2;
-      return n.isOdd ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
-    }
-
-    final med = median(sorted);
-    final absDevs = sorted.map((v) => (v - med).abs()).toList()..sort();
-    final mad = median(absDevs);
-    if (mad == 0) return false;
-
-    final mz = 0.6745 * (value - med).abs() / mad;
-    return mz > threshold;
-  }
-
   Future<double> _estimateBudgetForUser(String userId) async {
-    const double kDefaultPPD = 200.0; // ✅ fallback = RM 200 per person per day
-
     try {
       // Build current user's area profile from selections
-      if (selectedAreas.isEmpty) {
-        final myDays0 = _deriveMyDays();
-        final myTrav0 = numberOfTravelers <= 0 ? 1 : numberOfTravelers;
-        return kDefaultPPD * myTrav0 * (myDays0 <= 0 ? 1 : myDays0);
-      }
-
+      if (selectedAreas.isEmpty) return 0.0;
       final Map<String, int> currentUserAreaDays = {
         for (final area in selectedAreas)
           if ((userAreaPicks[widget.userId]?[area] ?? 0) > 0)
@@ -7413,7 +8585,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         final int theirDays = _deriveDaysFromDoc(data);
         final int theirTrav = (data['numberOfTravelers'] as num?)?.toInt() ?? 1;
 
-        // Overspend filter
+        // Optional overspend filter: include even if permission denied
         bool overspent = false;
         try {
           overspent = await _didUserOverspend(doc.id, budget);
@@ -7422,7 +8594,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         }
         if (overspent) continue;
 
-        // Area overlap (Jaccard)
+        // Area overlap (Jaccard) if both sides have areaDays
         double baseSim = 1.0;
         if (data['areaDays'] is Map && currentUserAreaDays.isNotEmpty) {
           final theirs =
@@ -7445,36 +8617,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       }
 
       debugPrint("✅ CF per-trip candidates: ${rows.length}");
-
-      // ✅ Fallback when no trips at all: use RM200/day/traveler
-      if (rows.isEmpty) {
-        return kDefaultPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
-      }
-
-      // ✅ MAD outlier filtering on per-person-per-day
-      {
-        final allPpd =
-            rows.map((r) {
-              final b = (r['budget'] as num).toDouble();
-              final t = (r['numberOfTravelers'] as num).toInt();
-              final d = (r['days'] as num).toInt();
-              final tt = t <= 0 ? 1 : t;
-              final dd = d <= 0 ? 1 : d;
-              return b / tt / dd;
-            }).toList();
-
-        // remove rows whose ppd is an outlier by MAD
-        rows.removeWhere((r) {
-          final b = (r['budget'] as num).toDouble();
-          final t = (r['numberOfTravelers'] as num).toInt();
-          final d = (r['days'] as num).toInt();
-          final tt = t <= 0 ? 1 : t;
-          final dd = d <= 0 ? 1 : d;
-          final ppd = b / tt / dd;
-          return _isOutlierMAD(ppd, allPpd);
-        });
-        debugPrint("✂️ after MAD filtering: ${rows.length} rows remain");
-      }
+      if (rows.isEmpty) return myDays * myTravellers * 300.0;
 
       // Exact-first by (travellers, days)
       final exactRows =
@@ -7493,29 +8636,28 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         debugPrint("🎯 CF: using exact matches only (${exactRows.length})");
       }
 
-      // Your existing percentile trimming (kept)
+      // 🔎 Optional: trim pp/day outliers (10–90 percentile) when enough data
       if (used.length >= 6) {
         final ppdList =
-            used.map((r) {
-                final b = (r['budget'] as num).toDouble();
-                final t = (r['numberOfTravelers'] as num).toInt().clamp(1, 999);
-                final d = (r['days'] as num).toInt().clamp(1, 999);
-                return b / t / d;
-              }).toList()
+            used
+                .map(
+                  (r) =>
+                      (r['budget'] as num).toDouble() /
+                      ((r['numberOfTravelers'] as num).toInt().clamp(1, 999)) /
+                      ((r['days'] as num).toInt().clamp(1, 999)),
+                )
+                .toList()
               ..sort();
-
         double p10 = ppdList[(ppdList.length * 0.10).floor()];
         double p90 = ppdList[(ppdList.length * 0.90).floor()];
-
         final trimmed =
             used.where((r) {
-              final b = (r['budget'] as num).toDouble();
-              final t = (r['numberOfTravelers'] as num).toInt().clamp(1, 999);
-              final d = (r['days'] as num).toInt().clamp(1, 999);
-              final ppd = b / t / d;
+              final ppd =
+                  (r['budget'] as num).toDouble() /
+                  ((r['numberOfTravelers'] as num).toInt().clamp(1, 999)) /
+                  ((r['days'] as num).toInt().clamp(1, 999));
               return ppd >= p10 && ppd <= p90;
             }).toList();
-
         if (trimmed.length >= 3) {
           used = trimmed;
           debugPrint("✂️ trimmed outliers: kept ${used.length}/${rows.length}");
@@ -7541,60 +8683,39 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
 
         weightedSum += ppd * w;
         totalWeight += w;
-
-        debugPrint(
-          "🧮 CF row -> trip:${r['tripId']} | owner:${r['ownerId']} | "
-          "theirTrav:$theirTrav | theirDays:$theirDays | budget:${b.toStringAsFixed(2)} | "
-          "pp/day:${ppd.toStringAsFixed(2)} | baseSim:${baseSim.toStringAsFixed(3)} | "
-          "travW:${travW.toStringAsFixed(2)} | dayW:${dayW.toStringAsFixed(2)} | w:${w.toStringAsFixed(3)}",
-        );
       }
 
       if (totalWeight == 0.0) {
-        // fallback: unweighted mean if we still have data
-        if (used.isNotEmpty) {
-          final avgPPD =
-              used
-                  .map((r) {
-                    final b = (r['budget'] as num).toDouble();
-                    final t = (r['numberOfTravelers'] as num).toInt();
-                    final d = (r['days'] as num).toInt();
-                    return b / (t <= 0 ? 1 : t) / (d <= 0 ? 1 : d);
-                  })
-                  .fold<double>(0.0, (s, v) => s + v) /
-              used.length;
-          final tot = avgPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
-          return (tot > 0)
-              ? tot
-              : kDefaultPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
-        }
-
-        // if somehow nothing usable → default
-        return kDefaultPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
+        // fallback: unweighted mean
+        final avgPPD =
+            used
+                .map((r) {
+                  final b = (r['budget'] as num).toDouble();
+                  final t = (r['numberOfTravelers'] as num).toInt();
+                  final d = (r['days'] as num).toInt();
+                  return b / (t <= 0 ? 1 : t) / (d <= 0 ? 1 : d);
+                })
+                .fold<double>(0.0, (s, v) => s + v) /
+            used.length;
+        return avgPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
       }
 
       final ppd = weightedSum / totalWeight;
       final totalEstimate = ppd * myTravellers * (myDays <= 0 ? 1 : myDays);
 
-      // ✅ final safety fallback if negative/zero for any reason
-      if (totalEstimate <= 0) {
-        return kDefaultPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
-      }
-
       debugPrint(
-        "🛠️ Debug: Weighted sum: ${weightedSum.toStringAsFixed(2)} | Total weight: ${totalWeight.toStringAsFixed(2)}",
+        "🛠️ Debug: Weighted sum: ${weightedSum.toStringAsFixed(2)} | "
+        "Total weight: ${totalWeight.toStringAsFixed(2)}",
       );
       debugPrint(
-        "✅ CF result -> perPersonPerDay:${ppd.toStringAsFixed(2)} | myTravellers:$myTravellers | myDays:$myDays | total:${totalEstimate.toStringAsFixed(2)}",
+        "✅ CF result -> perPersonPerDay:${ppd.toStringAsFixed(2)} | "
+        "myTravellers:$myTravellers | myDays:$myDays | total:${totalEstimate.toStringAsFixed(2)}",
       );
 
       return totalEstimate;
     } catch (e) {
       debugPrint("CF error: $e");
-      // ✅ on any error, return RM200/day/traveler fallback
-      final myDays = _deriveMyDays();
-      final myTravellers = numberOfTravelers <= 0 ? 1 : numberOfTravelers;
-      return kDefaultPPD * myTravellers * (myDays <= 0 ? 1 : myDays);
+      return 0.0;
     }
   }
 
@@ -7673,35 +8794,6 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
             ),
       );
     }
-  }
-
-  List<Map<String, dynamic>> _filterOutliers(
-    List<Map<String, dynamic>> trips, {
-    double madThreshold = 3.5,
-  }) {
-    if (trips.length <= 2) return trips; // too few to filter
-
-    final budgets = trips.map((t) => t['budget'] as num).toList()..sort();
-
-    num _median(List<num> xs) {
-      if (xs.isEmpty) return 0;
-      final n = xs.length;
-      final mid = n ~/ 2;
-      return n.isOdd ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
-    }
-
-    final med = _median(budgets);
-
-    final absDevs = budgets.map((b) => (b - med).abs()).toList()..sort();
-    final mad = _median(absDevs);
-    if (mad == 0) return trips;
-
-    bool isOutlier(num b) {
-      final mz = 0.6745 * (b - med).abs() / mad;
-      return mz > madThreshold;
-    }
-
-    return trips.where((t) => !isOutlier(t['budget'] as num)).toList();
   }
 
   Widget _buildBudgetEstimationWidget() {
@@ -7994,7 +9086,6 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
               ),
               const SizedBox(height: 20),
 
-              // Areas Section
               Text(
                 'Choose Areas:',
                 style: GoogleFonts.poppins(
@@ -8003,6 +9094,23 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                   color: _brandDark,
                 ),
               ),
+              const SizedBox(height: 4),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Higher scores = more recommended based on your travel preferences.',
+                      style: GoogleFonts.poppins(
+                        fontSize: 11,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8.0,
@@ -8228,7 +9336,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Budget Card - Updated to use brand colors
+              // Budget Mode Card
               Card(
                 elevation: 4,
                 shape: RoundedRectangleBorder(
@@ -8238,10 +9346,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
                     gradient: LinearGradient(
-                      colors: [
-                        Colors.white,
-                        Color(0xFF8D6E63).withOpacity(0.1),
-                      ], // Medium-dark brown variant
+                      colors: [Colors.white, _brand.withOpacity(0.05)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
@@ -8255,17 +9360,14 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                           Container(
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color: Color(0xFF8D6E63).withOpacity(0.3),
+                              color: _brand.withOpacity(0.2),
                               borderRadius: BorderRadius.circular(8),
                             ),
-                            child: Icon(
-                              Icons.monetization_on,
-                              color: Color(0xFF3E2723), // Very dark brown
-                            ),
+                            child: Icon(Icons.hotel, color: _brandDark),
                           ),
                           const SizedBox(width: 12),
                           Text(
-                            'Budget Planning',
+                            'Budget Mode',
                             style: GoogleFonts.poppins(
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
@@ -8275,39 +9377,96 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
-                      TextField(
-                        controller: _budgetController,
-                        keyboardType: TextInputType.number,
-                        style: GoogleFonts.poppins(),
-                        decoration: InputDecoration(
-                          labelText: 'Enter Budget (MYR)',
-                          labelStyle: GoogleFonts.poppins(),
-                          hintText: 'e.g. 2000',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: Colors.grey[300]!),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(
-                              color: Color(0xFF8D6E63),
-                              width: 2,
-                            ),
-                          ),
-                          contentPadding: const EdgeInsets.all(16),
-                        ),
-                        onChanged: (value) {
-                          setState(() {
-                            budget = double.tryParse(value) ?? 0.0;
-                          });
-                        },
-                      ),
+
                       const SizedBox(height: 16),
-                      _buildBudgetEstimationWidget(),
+                      if (useHotelLevel)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Choose Hotel Level (1–5 Stars)',
+                              style: GoogleFonts.poppins(
+                                fontWeight: FontWeight.w500,
+                                color: _brandDark,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                activeTrackColor: _brand,
+                                thumbColor: _brandDark,
+                                overlayColor: _brand.withOpacity(0.2),
+                              ),
+                              child: Slider(
+                                value: selectedHotelLevel.toDouble(),
+                                min: 1,
+                                max: 5,
+                                divisions: 4,
+                                label: selectedHotelLevel.toString(),
+                                onChanged: (value) {
+                                  setState(() {
+                                    selectedHotelLevel = value.toInt();
+                                  });
+                                },
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: _brand.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                accommodationLevels[selectedHotelLevel] ?? '',
+                                style: GoogleFonts.poppins(
+                                  color: _brandDark,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      else
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Enter Hotel Budget (MYR)',
+                              style: GoogleFonts.poppins(
+                                fontWeight: FontWeight.w500,
+                                color: _brandDark,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _hotelManualAmountController,
+                              keyboardType: TextInputType.number,
+                              style: GoogleFonts.poppins(),
+                              decoration: InputDecoration(
+                                hintText: 'e.g. 600',
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(
+                                    color: Colors.grey[300]!,
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(
+                                    color: _brand,
+                                    width: 2,
+                                  ),
+                                ),
+                                contentPadding: const EdgeInsets.all(16),
+                              ),
+                            ),
+                          ],
+                        ),
                     ],
                   ),
                 ),
               ),
+
               const SizedBox(height: 16),
 
               // Plan Style Card - Updated to use brand colors
@@ -8408,7 +9567,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Budget Mode Card
+              // Budget Card - Updated to use brand colors
               Card(
                 elevation: 4,
                 shape: RoundedRectangleBorder(
@@ -8418,7 +9577,10 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
                     gradient: LinearGradient(
-                      colors: [Colors.white, _brand.withOpacity(0.05)],
+                      colors: [
+                        Colors.white,
+                        Color(0xFF8D6E63).withOpacity(0.1),
+                      ], // Medium-dark brown variant
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
@@ -8432,14 +9594,17 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                           Container(
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color: _brand.withOpacity(0.2),
+                              color: Color(0xFF8D6E63).withOpacity(0.3),
                               borderRadius: BorderRadius.circular(8),
                             ),
-                            child: Icon(Icons.hotel, color: _brandDark),
+                            child: Icon(
+                              Icons.monetization_on,
+                              color: Color(0xFF3E2723), // Very dark brown
+                            ),
                           ),
                           const SizedBox(width: 12),
                           Text(
-                            'Budget Mode',
+                            'Budget Planning',
                             style: GoogleFonts.poppins(
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
@@ -8449,134 +9614,35 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: ToggleButtons(
-                          isSelected: [useHotelLevel, !useHotelLevel],
-                          onPressed: (index) {
-                            setState(() {
-                              useHotelLevel = index == 0;
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          fillColor: _brand,
-                          selectedColor: _brandDark,
-                          color: Colors.grey[600],
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                              child: Text(
-                                'Hotel Level',
-                                style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
+                      TextField(
+                        controller: _budgetController,
+                        keyboardType: TextInputType.number,
+                        style: GoogleFonts.poppins(),
+                        decoration: InputDecoration(
+                          labelText: 'Enter Budget (MYR)',
+                          labelStyle: GoogleFonts.poppins(),
+                          hintText: 'e.g. 2000',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: Colors.grey[300]!),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                              color: Color(0xFF8D6E63),
+                              width: 2,
                             ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                              child: Text(
-                                'Budget Level',
-                                style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ],
+                          ),
+                          contentPadding: const EdgeInsets.all(16),
                         ),
+                        onChanged: (value) {
+                          setState(() {
+                            budget = double.tryParse(value) ?? 0.0;
+                          });
+                        },
                       ),
                       const SizedBox(height: 16),
-                      if (useHotelLevel)
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Choose Hotel Level (1–5 Stars)',
-                              style: GoogleFonts.poppins(
-                                fontWeight: FontWeight.w500,
-                                color: _brandDark,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            SliderTheme(
-                              data: SliderTheme.of(context).copyWith(
-                                activeTrackColor: _brand,
-                                thumbColor: _brandDark,
-                                overlayColor: _brand.withOpacity(0.2),
-                              ),
-                              child: Slider(
-                                value: selectedHotelLevel.toDouble(),
-                                min: 1,
-                                max: 5,
-                                divisions: 4,
-                                label: selectedHotelLevel.toString(),
-                                onChanged: (value) {
-                                  setState(() {
-                                    selectedHotelLevel = value.toInt();
-                                  });
-                                },
-                              ),
-                            ),
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: _brand.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                accommodationLevels[selectedHotelLevel] ?? '',
-                                style: GoogleFonts.poppins(
-                                  color: _brandDark,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ],
-                        )
-                      else
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Enter Hotel Budget (MYR)',
-                              style: GoogleFonts.poppins(
-                                fontWeight: FontWeight.w500,
-                                color: _brandDark,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: _hotelManualAmountController,
-                              keyboardType: TextInputType.number,
-                              style: GoogleFonts.poppins(),
-                              decoration: InputDecoration(
-                                hintText: 'e.g. 600',
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: Colors.grey[300]!,
-                                  ),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: _brand,
-                                    width: 2,
-                                  ),
-                                ),
-                                contentPadding: const EdgeInsets.all(16),
-                              ),
-                            ),
-                          ],
-                        ),
+                      _buildBudgetEstimationWidget(),
                     ],
                   ),
                 ),
@@ -8660,6 +9726,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
               ),
 
               // Selected Hotel Display - Updated colors
+              // Updated Selected Hotel Display section in build method
               if (selectedHotel != null) ...[
                 const SizedBox(height: 24),
                 Text(
@@ -8680,34 +9747,160 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(16),
                       gradient: LinearGradient(
-                        colors: [
-                          Color(0xFFE8DDD4),
-                          Color(0xFFD7CCC8),
-                        ], // Light to medium brand colors
+                        colors: [Color(0xFFE8DDD4), Color(0xFFD7CCC8)],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
                     ),
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(16),
-                      leading: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: _brandDark,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(Icons.check_circle, color: Colors.white),
-                      ),
-                      title: Text(
-                        selectedHotel!['properties']['name'],
-                        style: GoogleFonts.poppins(
-                          fontWeight: FontWeight.w600,
-                          color: _brandDark,
-                        ),
-                      ),
-                      subtitle: Text(
-                        "Room: $selectedRoomType — RM ${selectedHotel!['roomPrice']}",
-                        style: GoogleFonts.poppins(color: Color(0xFF5D4037)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: _brandDark,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Icon(
+                                  Icons.check_circle,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      selectedHotel!['properties']['name'],
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.w600,
+                                        color: _brandDark,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      selectedHotel!['properties']['address'] ??
+                                          'No address available',
+                                      style: GoogleFonts.poppins(
+                                        color: Color(0xFF5D4037),
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          // Room arrangement details
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.7),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: _brand.withOpacity(0.3),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Room arrangement
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.hotel_outlined,
+                                      size: 16,
+                                      color: _brandDark,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        selectedHotel!['roomArrangement'] ??
+                                            "${selectedHotel!['roomCount'] ?? 1} ${selectedHotel!['selectedRoomType']} room(s)",
+                                        style: GoogleFonts.poppins(
+                                          fontWeight: FontWeight.w500,
+                                          color: _brandDark,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+
+                                const SizedBox(height: 8),
+
+                                // Pricing
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.monetization_on_outlined,
+                                      size: 16,
+                                      color: _brandDark,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      "RM ${selectedHotel!['totalRoomPrice']?.toStringAsFixed(2) ?? selectedHotel!['roomPrice']?.toStringAsFixed(2) ?? '0.00'}/night",
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(
+                                          0xFF2E7D32,
+                                        ), // Green for price
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+
+                                // Show cost breakdown for multiple rooms
+                                if ((selectedHotel!['roomCount'] as int? ?? 1) >
+                                    1) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    "(${selectedHotel!['roomCount']} rooms × RM ${(selectedHotel!['totalRoomPrice'] / (selectedHotel!['roomCount'] as int? ?? 1)).toStringAsFixed(2)} each)",
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 11,
+                                      color: Colors.grey[600],
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
+                                ],
+
+                                // Total cost for the trip
+                                if (startDate != null && endDate != null) ...[
+                                  const SizedBox(height: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _brand.withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      "Total trip cost: RM ${((selectedHotel!['totalRoomPrice'] ?? 0.0) * (endDate!.difference(startDate!).inDays)).toStringAsFixed(2)}",
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: _brandDark,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),

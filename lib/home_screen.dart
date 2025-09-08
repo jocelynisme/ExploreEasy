@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:badges/badges.dart' as badges;
 import 'package:flutter_animate/flutter_animate.dart';
+import 'my_trips_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   final VoidCallback? onNavigateToPlanTrip;
@@ -158,28 +159,24 @@ class HomeScreen extends StatelessWidget {
         icon: Icons.auto_awesome_rounded,
         title: 'AI Trip Planner',
         subtitle: 'Smart routes & picks',
-        onTap: () => _hint(context, 'AI-powered trip planning coming soon!'),
       ),
       _buildFeatureCard(
         context,
         icon: Icons.savings_rounded,
         title: 'Budget Guard',
         subtitle: 'Stay on track',
-        onTap: () => _hint(context, 'Track budgets with real-time alerts.'),
       ),
       _buildFeatureCard(
         context,
         icon: Icons.cloud_rounded,
         title: 'Weather-Aware',
         subtitle: 'Plans that adapt',
-        onTap: () => _hint(context, 'Weather-aware planning coming soon!'),
       ),
       _buildFeatureCard(
         context,
         icon: Icons.group_rounded,
         title: 'Collaborate',
         subtitle: 'Plan with friends',
-        onTap: () => _hint(context, 'Invite friends to plan together.'),
       ),
     ];
 
@@ -191,11 +188,8 @@ class HomeScreen extends StatelessWidget {
       mainAxisSpacing: 12,
       childAspectRatio: 1.2,
       children: List.generate(cards.length, (i) {
-        // Simple per-item entrance animation (no AnimateIfVisible needed)
         return cards[i]
-            .animate(
-              key: ValueKey('feature-$i'),
-            ) // stable key so hot-restart replays
+            .animate(key: ValueKey('feature-$i'))
             .fade(duration: 400.ms)
             .slide(
               begin: const Offset(0, .1),
@@ -247,41 +241,33 @@ class HomeScreen extends StatelessWidget {
     required IconData icon,
     required String title,
     required String subtitle,
-    required VoidCallback onTap,
   }) {
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 28, color: _brandDark),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                style: GoogleFonts.poppins(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black87,
-                ),
-                textAlign: TextAlign.center,
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 28, color: _brandDark),
+            const SizedBox(height: 8),
+            Text(
+              title,
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
               ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: GoogleFonts.poppins(
-                  fontSize: 12,
-                  color: Colors.grey[600],
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: GoogleFonts.poppins(fontSize: 12, color: Colors.grey[600]),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
       ),
     );
@@ -504,86 +490,237 @@ class _NextTripSection extends StatelessWidget {
               .collection('trips')
               .where('ownerId', isEqualTo: userId)
               .snapshots(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const SizedBox.shrink();
+      builder: (context, ownerTripsSnapshot) {
+        return StreamBuilder<QuerySnapshot>(
+          stream:
+              FirebaseFirestore.instance
+                  .collection('trips')
+                  .where('collaboratorIds', arrayContains: userId)
+                  .snapshots(),
+          builder: (context, collaboratorTripsSnapshot) {
+            // Handle loading and error states
+            if (ownerTripsSnapshot.connectionState == ConnectionState.waiting ||
+                collaboratorTripsSnapshot.connectionState ==
+                    ConnectionState.waiting) {
+              return const SizedBox.shrink(); // Or show loading indicator
+            }
+
+            if (ownerTripsSnapshot.hasError ||
+                collaboratorTripsSnapshot.hasError) {
+              print(
+                'Error loading trips: ${ownerTripsSnapshot.error ?? collaboratorTripsSnapshot.error}',
+              );
+              return const SizedBox.shrink();
+            }
+
+            // Combine trips and remove duplicates
+            final Map<String, QueryDocumentSnapshot> uniqueTrips = {};
+
+            // Add owner trips
+            if (ownerTripsSnapshot.hasData) {
+              for (var doc in ownerTripsSnapshot.data!.docs) {
+                uniqueTrips[doc.id] = doc;
+              }
+            }
+
+            // Add collaborator trips (will overwrite duplicates, which is fine)
+            if (collaboratorTripsSnapshot.hasData) {
+              for (var doc in collaboratorTripsSnapshot.data!.docs) {
+                uniqueTrips[doc.id] = doc;
+              }
+            }
+
+            if (uniqueTrips.isEmpty) {
+              return const SizedBox.shrink();
+            }
+
+            final now = DateTime.now();
+            final today = DateTime(now.year, now.month, now.day);
+
+            // Filter for upcoming/ongoing trips with better logic
+            final upcomingTrips =
+                uniqueTrips.values.where((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final startTs = data['startDate'];
+                  final endTs = data['endDate'];
+
+                  DateTime? start = _getStartDate(startTs);
+                  DateTime? end = _getStartDate(endTs);
+
+                  // Show trips that:
+                  // 1. Start today or in the future, OR
+                  // 2. Are currently ongoing (started in past but end in future)
+                  if (start != null && end != null) {
+                    // Ongoing trip: started before/on today AND ends after today
+                    // Future trip: starts after today
+                    return end.isAfter(today) || end.isAtSameMomentAs(today);
+                  } else if (start != null) {
+                    // Only start date available
+                    return !start.isBefore(today);
+                  }
+
+                  return false; // No valid dates
+                }).toList();
+
+            // Sort by start date (earliest first)
+            upcomingTrips.sort((a, b) {
+              final aData = a.data() as Map<String, dynamic>;
+              final bData = b.data() as Map<String, dynamic>;
+              final aStart = _getStartDate(aData['startDate']);
+              final bStart = _getStartDate(bData['startDate']);
+
+              if (aStart == null && bStart == null) return 0;
+              if (aStart == null) return 1;
+              if (bStart == null) return -1;
+              return aStart.compareTo(bStart);
+            });
+
+            print(
+              'Found ${upcomingTrips.length} upcoming trips for user $userId',
+            );
+
+            if (upcomingTrips.isEmpty) return const SizedBox.shrink();
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Your Upcoming Trips',
+                      style: GoogleFonts.poppins(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    Text(
+                      '${upcomingTrips.length} trip${upcomingTrips.length != 1 ? 's' : ''}',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 130,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: upcomingTrips.length,
+                    itemBuilder: (context, index) {
+                      final tripDoc = upcomingTrips[index];
+                      final trip = tripDoc.data() as Map<String, dynamic>;
+
+                      print(
+                        'Displaying trip: ${trip['title'] ?? trip['city']} (${tripDoc.id})',
+                      );
+
+                      return Container(
+                        width: 280,
+                        margin: const EdgeInsets.only(right: 12),
+                        child: _NextTripCardWithExpenses(
+                          tripId: tripDoc.id,
+                          tripData: trip,
+                          userId:
+                              userId!, // ✅ Pass the userId from _NextTripSection
+                          onView: () => onNavigateToMyTrips?.call(),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  DateTime? _getStartDate(dynamic startTs) {
+    try {
+      if (startTs is Timestamp) {
+        return startTs.toDate();
+      } else if (startTs is String) {
+        return DateTime.tryParse(startTs);
+      }
+    } catch (e) {
+      print('Error parsing date: $e');
+    }
+    return null;
+  }
+}
+
+class _NextTripCardWithExpenses extends StatelessWidget {
+  final String tripId;
+  final Map<String, dynamic> tripData;
+  final VoidCallback onView;
+  final String userId;
+
+  const _NextTripCardWithExpenses({
+    required this.tripId,
+    required this.tripData,
+    required this.onView,
+    required this.userId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot>(
+      stream:
+          FirebaseFirestore.instance
+              .collection('trips')
+              .doc(tripId)
+              .collection('expenses')
+              .snapshots(),
+      builder: (context, expensesSnapshot) {
+        // Calculate total expenses from subcollection
+        double totalExpenses = 0.0;
+        if (expensesSnapshot.hasData) {
+          for (var expenseDoc in expensesSnapshot.data!.docs) {
+            final expenseData = expenseDoc.data() as Map<String, dynamic>;
+            final amount = (expenseData['amount'] as num?)?.toDouble() ?? 0.0;
+            totalExpenses += amount;
+          }
         }
 
-        final now = DateTime.now();
-        final today = DateTime(now.year, now.month, now.day);
-        final upcomingTrips =
-            snapshot.data!.docs.where((doc) {
-              final data = doc.data() as Map<String, dynamic>;
-              final startTs = data['startDate'];
-              DateTime? start;
+        final city =
+            (tripData['city'] ?? tripData['title'] ?? 'Your Trip').toString();
+        final budgetTotal = (tripData['budget'] as num?)?.toDouble() ?? 0.0;
+        final startTs = tripData['startDate'];
+        final endTs = tripData['endDate'];
 
-              if (startTs is Timestamp) {
-                start = startTs.toDate();
-              } else if (startTs is String) {
-                start = DateTime.tryParse(startTs);
-              }
-              return start != null && !start.isBefore(today);
-            }).toList();
+        DateTime? start;
+        DateTime? end;
 
-        if (upcomingTrips.isEmpty) return const SizedBox.shrink();
+        if (startTs is Timestamp) {
+          start = startTs.toDate();
+        } else if (startTs is String) {
+          start = DateTime.tryParse(startTs);
+        }
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Your Upcoming Trips',
-              style: GoogleFonts.poppins(
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 130, // Reduced height to prevent overflow
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: upcomingTrips.length,
-                itemBuilder: (context, index) {
-                  final trip =
-                      upcomingTrips[index].data() as Map<String, dynamic>;
-                  final city =
-                      (trip['city'] ?? trip['title'] ?? 'Your Trip').toString();
-                  final budgetUsed = (trip['spent'] ?? 0).toInt();
-                  final budgetTotal = (trip['budget'] ?? 0).toInt();
-                  final startTs = trip['startDate'];
-                  final endTs = trip['endDate'];
-                  DateTime? start =
-                      startTs is Timestamp
-                          ? startTs.toDate()
-                          : (startTs is String
-                              ? DateTime.tryParse(startTs)
-                              : null);
-                  DateTime? end =
-                      endTs is Timestamp
-                          ? endTs.toDate()
-                          : (endTs is String ? DateTime.tryParse(endTs) : null);
+        if (endTs is Timestamp) {
+          end = endTs.toDate();
+        } else if (endTs is String) {
+          end = DateTime.tryParse(endTs);
+        }
 
-                  final dateRange =
-                      (start != null && end != null)
-                          ? _fmtRange(start, end)
-                          : (start != null ? _fmtSingle(start) : 'Dates TBC');
+        final dateRange =
+            (start != null && end != null)
+                ? _fmtRange(start, end)
+                : (start != null ? _fmtSingle(start) : 'Dates TBC');
 
-                  return Container(
-                    width: 280, // Slightly increased width
-                    margin: const EdgeInsets.only(right: 12),
-                    child: _NextTripCardCompact(
-                      city: city,
-                      dateRange: dateRange,
-                      budgetUsed: budgetUsed,
-                      budgetTotal: budgetTotal <= 0 ? 1 : budgetTotal,
-                      onView: () => onNavigateToMyTrips?.call(),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
+        return _NextTripCardCompact(
+          tripId: tripId, // ✅ Use the tripId parameter from this widget
+          userId: userId!,
+          city: city,
+          dateRange: dateRange,
+          budgetUsed: totalExpenses.round(),
+          budgetTotal: budgetTotal <= 0 ? 1 : budgetTotal.round(),
+          onView: onView,
         );
       },
     );
@@ -634,8 +771,12 @@ class _NextTripCardCompact extends StatelessWidget {
   final int budgetUsed;
   final int budgetTotal;
   final VoidCallback onView;
+  final String tripId;
+  final String userId;
 
   const _NextTripCardCompact({
+    required this.tripId,
+    required this.userId,
     required this.city,
     required this.dateRange,
     required this.budgetUsed,
@@ -702,14 +843,25 @@ class _NextTripCardCompact extends StatelessWidget {
                 ),
               ),
               OutlinedButton(
-                onPressed: onView,
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder:
+                          (context) => TripDetailScreen(
+                            tripId: tripId,
+                            userId: userId,
+                          ), // Pass the tripId
+                    ),
+                  );
+                },
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.black87,
                   side: BorderSide(color: Colors.black.withOpacity(.15)),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  minimumSize: const Size(50, 32), // Smaller button
+                  minimumSize: const Size(50, 32),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
                 child: Text('View', style: GoogleFonts.poppins(fontSize: 12)),

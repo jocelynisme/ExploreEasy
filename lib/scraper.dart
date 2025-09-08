@@ -29,21 +29,20 @@ const String apiKey = 'AIzaSyDMJnOsTzbY7Cz7EGjnmvhDhyEPQOlJWxA';
 
 // Updated regions with reduced radius and bounds
 const List<Map<String, dynamic>> _penangRegions = [
-  {
-    'state': 'Penang',
-    'area': 'George Town',
-    'lat': 5.4141619,
-    'lon': 100.3287352,
-    'radius': 3000, // Reduced from 5000
-    'bounds': {
-      'north': 5.435,
-      'south': 5.395,
-      'east': 100.345,
-      'west': 100.315,
-    },
-    'addressVariations': ['george town', 'georgetown', 'penang'],
-  },
-
+  // {
+  //   'state': 'Penang',
+  //   'area': 'George Town',
+  //   'lat': 5.4141619,
+  //   'lon': 100.3287352,
+  //   'radius': 3000, // Reduced from 5000
+  //   'bounds': {
+  //     'north': 5.435,
+  //     'south': 5.395,
+  //     'east': 100.345,
+  //     'west': 100.315,
+  //   },
+  //   'addressVariations': ['george town', 'georgetown', 'penang'],
+  // },
   // {
   //   'state': 'Penang',
   //   'area': 'Tanjung Tokong',
@@ -119,20 +118,20 @@ const List<Map<String, dynamic>> _penangRegions = [
   //   },
   //   'addressVariations': ['balik pulau', 'balikpulau'],
   // },
-  // {
-  //   'state': 'Penang',
-  //   'area': 'Batu Ferringhi',
-  //   'lat': 5.4736,
-  //   'lon': 100.2484,
-  //   'radius': 3000,
-  //   'bounds': {
-  //     'north': 5.490,
-  //     'south': 5.455,
-  //     'east': 100.265,
-  //     'west': 100.230,
-  //   },
-  //   'addressVariations': ['batu ferringhi', 'ferringhi'],
-  // },
+  {
+    'state': 'Penang',
+    'area': 'Batu Ferringhi',
+    'lat': 5.4736,
+    'lon': 100.2484,
+    'radius': 3000,
+    'bounds': {
+      'north': 5.490,
+      'south': 5.455,
+      'east': 100.265,
+      'west': 100.230,
+    },
+    'addressVariations': ['batu ferringhi', 'ferringhi'],
+  },
 ];
 
 const Map<String, String> _categories = {

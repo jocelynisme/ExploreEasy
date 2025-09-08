@@ -8,7 +8,7 @@ import 'dart:io';
 import 'main_screen.dart';
 import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart'
     as dp;
-
+import 'package:cloudinary_public/cloudinary_public.dart';
 import 'dart:async'; // 👈 for StreamSubscription
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -554,8 +554,15 @@ class _SignUpScreenState extends State<SignUpScreen> {
   String? _errorMessage;
   final _auth = FirebaseAuth.instance;
   final _firestore = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
   final ImagePicker _picker = ImagePicker();
+
+  // Initialize Cloudinary
+  final cloudinary = CloudinaryPublic(
+    'dkcqc2zpd', // Your cloud name
+    'travel_app_preset', // Your upload preset
+    cache: false,
+  );
+
   final RegExp _usernameRegex = RegExp(r'^[a-zA-Z0-9_]{3,}$');
   final RegExp _emailRegex = RegExp(
     r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.(com|net|org|edu|gov|my|co\.uk|io)$",
@@ -661,14 +668,21 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   Future<String?> _uploadProfilePic(String userId) async {
     if (_profilePic == null) return null;
-    try {
-      var ref = _storage.ref().child('profile_pics/$userId.jpg');
 
-      await ref.putFile(_profilePic!);
-      return await ref.getDownloadURL();
+    try {
+      print("⏱ Starting Cloudinary upload...");
+
+      // Upload to Cloudinary with user ID as public ID
+      CloudinaryResponse response = await cloudinary.uploadFile(
+        CloudinaryFile.fromFile(_profilePic!.path),
+      );
+
+      print("✅ Cloudinary upload successful: ${response.secureUrl}");
+      return response.secureUrl;
     } catch (e) {
+      print("❌ Cloudinary upload failed: $e");
       setState(() {
-        _errorMessage = 'Failed to upload profile picture: \$e';
+        _errorMessage = 'Failed to upload profile picture: $e';
       });
       return null;
     }
@@ -685,13 +699,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
       final dob = _dobController.text.trim();
       final phone = _phoneNumberController.text.replaceAll(RegExp(r'\D'), '');
 
-      // Continue as before:
       print("⏱ Creating user...");
       final userCredential = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
-      print("✅ FirebaseAuth done in \${stopwatch.elapsedMilliseconds}ms");
+      print("✅ FirebaseAuth done in ${stopwatch.elapsedMilliseconds}ms");
 
       bool isUsernameAvailable = await _checkUsernameAvailability(
         _usernameController.text.trim(),
@@ -704,6 +717,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
         return;
       }
 
+      // Upload profile picture to Cloudinary
       String? profilePicUrl = await _uploadProfilePic(userCredential.user!.uid);
 
       await _firestore.collection('users').doc(userCredential.user!.uid).set({
@@ -716,7 +730,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
         'profilePicUrl': profilePicUrl,
       });
 
-      print("✅ Firestore write done in \${stopwatch.elapsedMilliseconds}ms");
+      print("✅ Firestore write done in ${stopwatch.elapsedMilliseconds}ms");
 
       Navigator.pushReplacement(
         context,
@@ -725,12 +739,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ),
       );
     } catch (e) {
-      print("❌ Sign-up failed in \${stopwatch.elapsedMilliseconds}ms");
+      print("❌ Sign-up failed in ${stopwatch.elapsedMilliseconds}ms");
       setState(() {
         _errorMessage = e.toString();
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Sign-up failed: \${e.toString()}")),
+        SnackBar(content: Text("Sign-up failed: ${e.toString()}")),
       );
     }
   }
@@ -786,7 +800,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 suffixIcon: Icon(Icons.calendar_today),
                 errorText: _dobError,
               ),
-              // Inside your onTap:
               onTap: () {
                 dp.DatePicker.showDatePicker(
                   context,
