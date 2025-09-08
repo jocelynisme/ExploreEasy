@@ -30,7 +30,7 @@ jobs:
         run: flutter pub get
 
       - name: Build web (GitHub Pages path = /ExploreEasy/)
-  run: flutter build web --release --web-renderer html --source-maps --base-href "/ExploreEasy/"
+        run: flutter build web --release --web-renderer html --source-maps --base-href "/ExploreEasy/"
 
 
       - name: Upload artifact
